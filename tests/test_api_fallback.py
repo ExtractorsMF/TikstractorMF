@@ -1,0 +1,115 @@
+import httpx
+import respx
+
+from tikstractormf.api import TiktokAPI
+
+
+def test_fetch_post_falls_back_on_403():
+    api = TiktokAPI(cookies=None)
+    api._extract_sec_uid = lambda username: "sec123"  # type: ignore[assignment]
+
+    item = {
+        "id": "1234567890",
+        "desc": "hello",
+        "createTime": 1700000000,
+        "author": {"uniqueId": "user1"},
+        "video": {
+            "downloadAddr": "https://v16-webapp-prime.us.tiktok.com/video/tos/x/d.mp4?a=1",
+        },
+    }
+
+    with respx.mock:
+        respx.get(url__regex=r".*creator/item_list.*").mock(
+            return_value=httpx.Response(200, json={"itemList": [item], "hasMorePrevious": False})
+        )
+        respx.get(url__regex=r".*tiktok\.com/@user1/video/1234567890.*").mock(
+            return_value=httpx.Response(403)
+        )
+        posts = api.get_posts("user1", limit=1, concurrency=1)
+
+    assert len(posts) == 1
+    assert posts[0].id == "1234567890"
+    assert "d.mp4" in posts[0].media[0].url
+
+
+def test_fetch_post_from_page_direct_fallback():
+    api = TiktokAPI(cookies=None)
+    item = {
+        "id": "999",
+        "author": {"uniqueId": "u"},
+        "video": {"playAddr": "https://v16-webapp-prime.us.tiktok.com/video/tos/y/v.mp4?x=1"},
+    }
+    api._item_by_id = {"999": item}
+    with respx.mock:
+        respx.get("https://www.tiktok.com/@u/video/999").mock(return_value=httpx.Response(403))
+        post = api._fetch_post_from_page("u", "999")
+    assert post is not None
+    assert post.id == "999"
+
+
+def test_fetch_post_falls_back_on_empty_script():
+    api = TiktokAPI(cookies=None)
+    item = {
+        "id": "999",
+        "author": {"uniqueId": "u"},
+        "video": {"playAddr": "https://v16-webapp-prime.us.tiktok.com/video/tos/y/v.mp4?x=1"},
+    }
+    api._item_by_id = {"999": item}
+    with respx.mock:
+        respx.get("https://www.tiktok.com/@u/video/999").mock(
+            return_value=httpx.Response(200, text="<html>no script</html>")
+        )
+        post = api._fetch_post_from_page("u", "999")
+    assert post is not None
+    assert post.id == "999"
+
+
+def test_fetch_post_falls_back_on_invalid_json():
+    api = TiktokAPI(cookies=None)
+    item = {
+        "id": "999",
+        "author": {"uniqueId": "u"},
+        "video": {"playAddr": "https://v16-webapp-prime.us.tiktok.com/video/tos/y/v.mp4?x=1"},
+    }
+    api._item_by_id = {"999": item}
+    bad_html = (
+        '<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">'
+        '{not json}</script>'
+    )
+    with respx.mock:
+        respx.get("https://www.tiktok.com/@u/video/999").mock(
+            return_value=httpx.Response(200, text=bad_html)
+        )
+        post = api._fetch_post_from_page("u", "999")
+    assert post is not None
+    assert post.id == "999"
+
+
+def test_fetch_post_falls_back_on_missing_itemstruct():
+    api = TiktokAPI(cookies=None)
+    item = {
+        "id": "999",
+        "author": {"uniqueId": "u"},
+        "video": {"playAddr": "https://v16-webapp-prime.us.tiktok.com/video/tos/y/v.mp4?x=1"},
+    }
+    api._item_by_id = {"999": item}
+    html = (
+        '<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">'
+        '{"__DEFAULT_SCOPE__":{"webapp.video-detail":{"itemInfo":{}}}}'
+        '</script>'
+    )
+    with respx.mock:
+        respx.get("https://www.tiktok.com/@u/video/999").mock(
+            return_value=httpx.Response(200, text=html)
+        )
+        post = api._fetch_post_from_page("u", "999")
+    assert post is not None
+    assert post.id == "999"
+
+
+def test_fetch_post_no_item_returns_none():
+    api = TiktokAPI(cookies=None)
+    with respx.mock:
+        respx.get("https://www.tiktok.com/@u/video/999").mock(return_value=httpx.Response(403))
+        post = api._fetch_post_from_page("u", "999")
+    assert post is None
