@@ -113,3 +113,87 @@ def test_fetch_post_no_item_returns_none():
         respx.get("https://www.tiktok.com/@u/video/999").mock(return_value=httpx.Response(403))
         post = api._fetch_post_from_page("u", "999")
     assert post is None
+
+
+def _item(post_id: str, create_time: int) -> dict:
+    return {
+        "id": post_id,
+        "desc": "d",
+        "createTime": create_time,
+        "author": {"uniqueId": "user1"},
+        "video": {"playAddr": f"https://v16-webapp-prime.us.tiktok.com/video/tos/x/{post_id}.mp4?a=1"},
+    }
+
+
+def test_iter_posts_paginates_two_pages():
+    api = TiktokAPI(cookies=None)
+    api._extract_sec_uid = lambda username: "sec123"  # type: ignore[assignment]
+
+    with respx.mock:
+        respx.get(url__regex=r".*creator/item_list.*").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "itemList": [_item("1", 1700000000)],
+                    "hasMorePrevious": True,
+                }),
+                httpx.Response(200, json={
+                    "itemList": [_item("2", 1699999999)],
+                    "hasMorePrevious": False,
+                }),
+            ]
+        )
+        respx.get(url__regex=r".*tiktok\.com/@user1/video/.*").mock(
+            return_value=httpx.Response(403)
+        )
+        posts = api.get_posts("user1", limit=2, concurrency=1)
+
+    assert [p.id for p in posts] == ["1", "2"]
+    assert api.last_report.pages_fetched == 2
+
+
+def test_iter_posts_has_more_field():
+    api = TiktokAPI(cookies=None)
+    api._extract_sec_uid = lambda username: "sec123"  # type: ignore[assignment]
+
+    with respx.mock:
+        respx.get(url__regex=r".*creator/item_list.*").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "itemList": [_item("1", 1700000000)],
+                    "hasMore": True,
+                }),
+                httpx.Response(200, json={
+                    "itemList": [_item("2", 1699999999)],
+                    "hasMore": False,
+                }),
+            ]
+        )
+        respx.get(url__regex=r".*tiktok\.com/@user1/video/.*").mock(
+            return_value=httpx.Response(403)
+        )
+        posts = api.get_posts("user1", limit=2, concurrency=1)
+
+    assert [p.id for p in posts] == ["1", "2"]
+    assert api.last_report.pages_fetched == 2
+
+
+def test_iter_posts_api_error_on_invalid_json():
+    api = TiktokAPI(cookies=None)
+    api._extract_sec_uid = lambda username: "sec123"  # type: ignore[assignment]
+
+    with respx.mock:
+        respx.get(url__regex=r".*creator/item_list.*").mock(
+            return_value=httpx.Response(200, text="not json")
+        )
+        posts = api.get_posts("user1", limit=1, concurrency=1)
+
+    assert posts == []
+    assert "invalid json" in api.last_report.api_error
+
+
+def test_iter_posts_no_secuid_used_fallback_false():
+    api = TiktokAPI(cookies=None)
+    api._extract_sec_uid = lambda username: None  # type: ignore[assignment]
+    posts = api.get_posts("user1")
+    assert posts == []
+    assert api.last_report.used_fallback is False

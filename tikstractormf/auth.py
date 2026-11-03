@@ -4,7 +4,7 @@ gallery-dl and yt-dlp load cookies with http.cookiejar.MozillaCookieJar
 which requires:
   - Line 1: "# Netscape HTTP Cookie File" or "# HTTP Cookie File"
   - 7 fields separated by TAB: domain\\tTRUE/FALSE\\tpath\\tTRUE/FALSE\\texpires\\tname\\tvalue
-  - Domain with "." prefix (e.g. .threads.net) = sent to subdomains (TRUE)
+  - Domain with "." prefix (e.g. .tiktok.com) = sent to subdomains (TRUE)
   - Expiry 0 = session cookie
 
 This module replicates that behavior so the same cookies.txt works
@@ -292,16 +292,6 @@ def load_from_browser(browser: str, *, domain: str = "tiktok.com") -> http.cooki
         )
     jar: http.cookiejar.CookieJar = loader(domain)
 
-    # browser_cookie3 filters by the requested domain only, but Threads keeps
-    # the session split between threads.com and threads.net. Merge both for
-    # every browser — previously only Brave got the threads.net half, silently
-    # leaving Chrome/Firefox/Edge with an incomplete session.
-    if domain == "threads.com":
-        try:
-            for c in loader("threads.net"):
-                jar.set_cookie(c)
-        except Exception:
-            pass
     return jar
 
 

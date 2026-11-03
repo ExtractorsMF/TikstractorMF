@@ -28,8 +28,8 @@ uv pip install -e ".[browser]"      # Playwright + cookies
 Library:
 
 ```python
-from tikstractormf import TikTokcraper
-scraper = TikTokcraper(cookies="cookies.txt")
+from tikstractormf import Tiktokscraper
+scraper = Tiktokscraper(cookies="cookies.txt")
 posts = scraper.get_posts("user", limit=20)
 for post in posts:
     for media in post.media:
@@ -52,8 +52,7 @@ tikstractormf --version
 | Module | Responsibility |
 |---|---|
 | client.py | Facade, wiring, download orchestration |
-| api.py | GraphQL walk + Playwright DOM fallback |
-| _discovery.py | Capture/cache GraphQL template |
+| api.py | Profile resolution + item_list walk + post rehydration |
 | _backend.py | httpx/curl_cffi backends |
 | auth.py | Netscape/browser cookies |
 | models.py | Post/Media/Profile |
@@ -123,4 +122,4 @@ uv run mypy tikstractormf scripts
 
 ## Status
 
-408 tests pass; ruff and mypy clean. Known gaps: duplicate summary line, library `archive` default, relay flag override, profile-pic ext derivation. See `docs/memory/state.md`.
+19 tests pass; ruff and mypy clean. Known gaps: pagination not verified live, profile-pic ext derivation, URL freshness on large profiles. See `review.md`.

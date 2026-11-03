@@ -49,6 +49,14 @@ def _guess_ext(url: str, format_hint: str | None = None) -> str:
     low = url.lower()
     if ".mp4" in low or ".webm" in low or ".mov" in low:
         return "mp4" if ".mp4" in low else ("webm" if ".webm" in low else "mov")
+    # Heuristic for extensionless CDN URLs (e.g. profile pics): look for a
+    # known image token anywhere in the URL before falling back to jpg.
+    if "webp" in low:
+        return "webp"
+    if "png" in low:
+        return "png"
+    if "jpeg" in low or "jpg" in low:
+        return "jpg"
     return "jpg"
 
 
@@ -233,11 +241,6 @@ def _pick_best_image(candidates):
         return c.get("url")
     except Exception:
         return candidates[0].get("url") if candidates else None
-
-
-def extract_user_id(html: str) -> str | None:
-    m = re.search(r'"uniqueId"\s*:\s*"([^"]+)"', html)
-    return m.group(1) if m else None
 
 
 def _unescape_json_string(value: str) -> str:
