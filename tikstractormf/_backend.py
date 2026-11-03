@@ -252,10 +252,10 @@ def to_playwright_cookies(jar: Any) -> list[dict[str, Any]]:
     """Convert a CookieJar into the dict shape ``BrowserContext.add_cookies`` wants.
 
     The leading dot on the domain **must be preserved**. Chromium treats a
-    domain without one as host-only, so ``threads.net`` would never be sent to
-    ``www.threads.net`` — i.e. every auth cookie silently dropped and the
-    browser left logged out. Verified: with ``.threads.net`` the cookie arrives,
-    with ``threads.net`` no ``Cookie`` header is sent at all.
+    domain without one as host-only, so ``tiktok.com`` would never be sent to
+    ``www.tiktok.com`` — i.e. every auth cookie silently dropped and the
+    browser left logged out. Verified: with ``.tiktok.com`` the cookie arrives,
+    with ``tiktok.com`` no ``Cookie`` header is sent at all.
 
     Shared by ``TiktokAPI`` (profile pic + post scraping) and ``scripts/sniff.py``
     so the three former copies of this conversion cannot drift apart again.

@@ -57,6 +57,7 @@ class Tiktokscraper:
         archive: bool = False,
         diagnostics_dir: str | Path | None = None,
         with_audio: bool = False,
+        verbose: bool = False,
     ):
         if isinstance(cookies, (str, Path)):
             cookies = load_netscape_cookies(cookies)
@@ -82,6 +83,8 @@ class Tiktokscraper:
         self.archive = archive
         self.diagnostics_dir = diagnostics_dir
         self.with_audio = with_audio
+        self.verbose = verbose
+        self._consecutive_403: list[int] = [0]
         self._ledgers: dict[str, DownloadLedger] = {}
         self._download_client: Any = None
         from tikstractormf.rate_limit import BatchCooldownLimiter, RateLimitConfig
@@ -102,6 +105,7 @@ class Tiktokscraper:
         self.api = TiktokAPI(
             cookies, impersonate=impersonate, timeout=timeout, rate_limit_config=cfg,
             extract_audio=with_audio,
+            verbose=verbose,
         )
 
     # --- API delegada ---
@@ -110,21 +114,21 @@ class Tiktokscraper:
 
     def iter_posts(
         self, username: str, *, limit: int | None = None, exclude_reposts: bool = True,
-        concurrency: int = 4, download_concurrency: int | None = None,
+        concurrency: int = 4,
     ):
         return self.api.iter_posts(
             username, limit=limit, exclude_reposts=exclude_reposts,
-            concurrency=concurrency, download_concurrency=download_concurrency,
+            concurrency=concurrency,
         )
 
     def get_posts(
         self, username: str, *, limit: int | None = None, exclude_reposts: bool = True,
-        concurrency: int = 4, download_concurrency: int | None = None,
+        concurrency: int = 4,
     ) -> list[Post]:
         return list(
             self.iter_posts(
                 username, limit=limit, exclude_reposts=exclude_reposts,
-                concurrency=concurrency, download_concurrency=download_concurrency,
+                concurrency=concurrency,
             )
         )
 
@@ -184,6 +188,7 @@ class Tiktokscraper:
             cookies=cookies,
             diagnostics_dir=diag,
             skip_on_403=skip_on_403,
+            consecutive_403=self._consecutive_403,
         )
 
     def _ledger_for(self, dest: str | Path) -> DownloadLedger | None:
@@ -270,6 +275,7 @@ class Tiktokscraper:
             cookies=cookies,
             diagnostics_dir=diag,
             skip_on_403=skip_on_403,
+            consecutive_403=self._consecutive_403,
         )
 
     def close(self) -> None:

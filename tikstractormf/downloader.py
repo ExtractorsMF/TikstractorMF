@@ -61,9 +61,10 @@ _default_limiter = BatchCooldownLimiter(
     cooldown_ms=8000, batch_size=50, batch_cooldown_ms=180000, jitter=0.2, enabled=True
 )
 
-# Adaptive pacing: module-level counter of consecutive 403s so a WAF block
-# triggers a long pause instead of hammering the CDN.
-_consecutive_403 = [0]
+# Adaptive pacing: counter of consecutive 403s so a WAF block triggers a long
+# pause instead of hammering the CDN. Defaults to a process-global counter;
+# callers (e.g. Tiktokscraper) may pass their own per-instance counter.
+_DEFAULT_CONSECUTIVE_403 = [0]
 
 
 # Directories that already represent one media type. Landing in one of them is
@@ -271,7 +272,7 @@ def _save_403_diagnostic(
                 if text is None and hasattr(response, "content"):
                     text = response.content.decode("utf-8", errors="replace")
                 if text is not None:
-                    body_snippet = str(text)[:4096]
+                    body_snippet = str(text)[:1024]
             except Exception:
                 body_snippet = ""
         if status_code is None and exc is not None:
@@ -324,6 +325,7 @@ def download_media(
     cookies: Any = None,
     diagnostics_dir: str | Path | None = None,
     skip_on_403: bool = False,
+    consecutive_403: list[int] | None = None,
 ) -> DownloadOutcome:
     """Download a Media to dest.
 
@@ -418,6 +420,7 @@ def download_media(
         if u and u != media.url
     ]
     saved_403_for_media = False
+    counter = consecutive_403 if consecutive_403 is not None else _DEFAULT_CONSECUTIVE_403
     try:
         for url_idx, download_url in enumerate(urls_to_try):
             for attempt in range(1, _DOWNLOAD_ATTEMPTS + 1):
@@ -456,7 +459,7 @@ def download_media(
                                 f.write(chunk)
                     tmp.replace(out)
                     # Reset the consecutive-403 counter on success.
-                    _consecutive_403[0] = 0
+                    counter[0] = 0
                     # El cooldown de lote se cuenta solo tras una descarga exitosa.
                     if hasattr(use_limiter, "increment"):
                         use_limiter.increment()
@@ -480,11 +483,11 @@ def download_media(
                             exc=e,
                         )
                     if _is_forbidden(e):
-                        _consecutive_403[0] += 1
+                        counter[0] += 1
                         if skip_on_403:
                             tmp.unlink(missing_ok=True)
                             return DownloadOutcome(out, DownloadStatus.BLOCKED)
-                        if _consecutive_403[0] >= 3:
+                        if counter[0] >= 3:
                             print(
                                 "  3+ consecutive 403s; pausing 60s...",
                                 file=sys.stderr, flush=True,
@@ -536,6 +539,7 @@ def download_profile_pic(
     cookies: Any = None,
     diagnostics_dir: str | Path | None = None,
     skip_on_403: bool = False,
+    consecutive_403: list[int] | None = None,
 ) -> DownloadOutcome:
     """Download profile pic with id f"{username}_profile"."""
     from tikstractormf._parsing import _guess_ext
@@ -556,11 +560,12 @@ def download_profile_pic(
             rate_limit=rate_limit, filename_template=filename_template, username=username,
             ledger=ledger, adopt_existing=adopt_existing, headers=headers,
             cookies=cookies, diagnostics_dir=diagnostics_dir,
-            skip_on_403=skip_on_403,
+            skip_on_403=skip_on_403, consecutive_403=consecutive_403,
         )
     return download_media(
         media, dest, client=client, impersonate=impersonate, limiter=limiter,
         rate_limit=rate_limit, username=username, ledger=ledger,
         adopt_existing=adopt_existing, headers=headers, cookies=cookies,
         diagnostics_dir=diagnostics_dir, skip_on_403=skip_on_403,
+        consecutive_403=consecutive_403,
     )

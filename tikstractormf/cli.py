@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import http.cookiejar
+import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import typer
 from rich.console import Console
@@ -12,7 +14,7 @@ from rich.console import Console
 from tikstractormf import __version__
 from tikstractormf.api import ScrapeReport
 from tikstractormf.auth import load_netscape_cookies
-from tikstractormf.downloader import DownloadOutcome, DownloadStatus
+from tikstractormf.downloader import DownloadOutcome, DownloadStatus, _is_forbidden
 
 try:  # browser_cookie3 is an optional extra
     from browser_cookie3 import BrowserCookieError as _BrowserCookieError
@@ -88,15 +90,7 @@ def _report_scrape(report: ScrapeReport) -> None:
             f"warning — the API did not respond as expected: {report.api_error}",
             soft_wrap=True,
         )
-    if report.used_fallback:
-        msg = (
-            "warning — the browser fallback was used: it is slower than the "
-            "API, but it reads the public profile in full."
-        )
-        if report.fallback_reason:
-            msg += f" It stopped because {report.fallback_reason}."
-        err_console.print(msg, soft_wrap=True)
-    elif report.truncated:
+    if report.truncated:
         # Only when the API walk is the one that delivered the posts. With the
         # fallback, truncation is folded into the message above: printing both
         # claimed the profile was read in full and cut short at the same time,
@@ -205,9 +199,15 @@ def main(
         "--get-urls",
         help="Print the media URLs instead of downloading (dry run)",
     ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Show progress messages (listing/fetching posts)",
+    ),
 ) -> None:
     """Download TikTok media by post_id."""
-    # normalize @user — supports threads.net and threads.com, URL or @handle
+    # normalize @user — supports tiktok.com URLs or @handle
     import re as _re
 
     if "tiktok.com" in target:
@@ -300,7 +300,19 @@ def main(
         archive=archive,
         no_adopt_existing=no_adopt_existing,
         get_urls=get_urls,
+        verbose=verbose,
     )
+
+
+def _url_expired(url: str) -> bool:
+    try:
+        qs = parse_qs(urlparse(url).query)
+        for key in ("expire", "expires"):
+            if key in qs:
+                return time.time() > int(qs[key][0])
+    except Exception:
+        return False
+    return False
 
 
 def _execute_scrape(
@@ -329,6 +341,7 @@ def _execute_scrape(
     archive: bool = False,
     no_adopt_existing: bool = False,
     get_urls: bool = False,
+    verbose: bool = False,
 ) -> None:
     from tikstractormf.client import Tiktokscraper
 
@@ -344,6 +357,7 @@ def _execute_scrape(
         archive=archive,
         diagnostics_dir=diagnostics_dir,
         with_audio=with_audio,
+        verbose=verbose,
     )
     adopt_existing = not no_adopt_existing
     # resolve directory_template -> final dest
@@ -413,29 +427,52 @@ def _execute_scrape(
             nonlocal report
             if report is None:
                 report = scraper.last_report
-            try:
-                outcome = scraper.download(
-                    media,
-                    final_dest,
-                    overwrite=overwrite,
-                    filename_template=filename_template,
-                    username=username,
-                    date_iso=post.datetime_iso,
-                    adopt_existing=adopt_existing,
-                    skip_on_403=skip_on_403,
-                )
-                _count(outcome, report)
-                if outcome.status is DownloadStatus.BLOCKED:
-                    err_console.print(
-                        f"[yellow]  {media.id} blocked (403): skipped[/yellow]",
-                        soft_wrap=True,
+            refreshed = False
+            while True:
+                try:
+                    outcome = scraper.download(
+                        media,
+                        final_dest,
+                        overwrite=overwrite,
+                        filename_template=filename_template,
+                        username=username,
+                        date_iso=post.datetime_iso,
+                        adopt_existing=adopt_existing,
+                        skip_on_403=skip_on_403,
                     )
-                else:
-                    console.print(f"  {media.id} -> {outcome.path}", soft_wrap=True)
-            except Exception as e:
-                report.failed += 1
-                failed_ids.append(media.id)
-                err_console.print(f"[yellow]  {media.id} failed: {e}[/yellow]")
+                    _count(outcome, report)
+                    if outcome.status is DownloadStatus.BLOCKED:
+                        err_console.print(
+                            f"[yellow]  {media.id} blocked (403): skipped[/yellow]",
+                            soft_wrap=True,
+                        )
+                    else:
+                        console.print(f"  {media.id} -> {outcome.path}", soft_wrap=True)
+                    break
+                except Exception as e:
+                    if (not refreshed) and (_is_forbidden(e) or _url_expired(media.url)):
+                        refreshed = True
+                        try:
+                            fresh_post = scraper.api._fetch_post_from_page(
+                                username, media.post_id,
+                                item=scraper.api._item_by_id.get(media.post_id),
+                            )
+                            fresh_media = None
+                            if fresh_post is not None:
+                                for m in fresh_post.media:
+                                    if m.index == media.index:
+                                        fresh_media = m
+                                        break
+                            if fresh_media is not None:
+                                media.url = fresh_media.url
+                                media.fallback_urls = list(fresh_media.fallback_urls)
+                                continue
+                        except Exception:
+                            pass
+                    report.failed += 1
+                    failed_ids.append(media.id)
+                    err_console.print(f"[yellow]  {media.id} failed: {e}[/yellow]")
+                    break
 
         from concurrent.futures import ThreadPoolExecutor
 
@@ -478,8 +515,12 @@ def _execute_scrape(
         # For All (no filter), also download profile pic after posts as sibling
         if is_all and not get_urls:
             try:
+                profile_dest = final_dest
+                if profile_dest.name in {"photos", "videos", "profile", "posts"}:
+                    profile_dest = profile_dest.parent
                 outcome = scraper.download_profile_pic(
-                    username, final_dest, filename_template=None
+                    username, profile_dest, filename_template=filename_template,
+                    skip_on_403=skip_on_403,
                 )
                 # Not counted through _count: the avatar is not one of the
                 # posts' media, so tallying it made downloaded+skipped exceed

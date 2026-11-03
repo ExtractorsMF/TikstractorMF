@@ -14,3 +14,7 @@ def test_tiktok_cdn_hosts():
 def test_invalid_hosts():
     assert not is_valid_media_url("https://evil.com/video.mp4")
     assert not is_valid_media_url("http://v16-webapp-prime.us.tiktok.com/v.mp4")
+
+
+def test_profile_pic_url_without_extension():
+    assert is_valid_media_url("https://p16-sign.tiktokcdn.com/obj/abc123~tplv")

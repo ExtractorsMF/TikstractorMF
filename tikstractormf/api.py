@@ -6,7 +6,7 @@ import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -14,9 +14,7 @@ import httpx
 
 from tikstractormf._backend import (
     CurlClient,
-    chromium_launch_args,
     is_transient_error,
-    to_playwright_cookies,
 )
 from tikstractormf._parsing import parse_item, parse_profile_html
 from tikstractormf.models import Media, Post, Profile
@@ -42,7 +40,7 @@ class ScrapeReport:
     pages_fetched: int = 0
     truncated: bool = False
     stop_reason: str = ""
-    used_fallback: bool = True
+    used_fallback: bool = False
     fallback_reason: str = ""
     api_error: str = ""
     limit: int | None = None
@@ -53,34 +51,10 @@ class ScrapeReport:
     profile_pic: bool = False
 
 
-@dataclass
-class DomScrape:
-    posts: list[Any] = field(default_factory=list)
-    exhausted: bool = False
-    reason: str = ""
-
-
-def coerce_dom(value: Any) -> DomScrape:
-    if isinstance(value, DomScrape):
-        return value
-    return DomScrape(posts=list(value) if value else [])
-
-
 def _finish_report(report: ScrapeReport, posts: list[Any]) -> None:
     report.posts = len(posts)
     report.media = sum(len(getattr(p, "media", ())) for p in posts)
     report.no_media = sum(1 for p in posts if not getattr(p, "media", ()))
-
-
-def _require_playwright() -> None:
-    try:
-        import playwright.sync_api  # noqa: F401
-    except ImportError as exc:
-        raise ImportError(
-            "playwright is required for this step but is not installed.\n"
-            "  pip install 'tikstractormf[browser]'\n"
-            "  playwright install chromium\n"
-        ) from exc
 
 
 def _decoy_headers() -> dict[str, str]:
@@ -106,6 +80,7 @@ class TiktokAPI:
         timeout: float = 15.0,
         rate_limit_config: RateLimitConfig | None = None,
         extract_audio: bool = False,
+        verbose: bool = False,
     ):
         if isinstance(cookies, (str, Path)):
             from tikstractormf.auth import load_netscape_cookies
@@ -117,6 +92,7 @@ class TiktokAPI:
         self._owns_client = False
         self.rate_limit_config = rate_limit_config or RateLimitConfig()
         self.extract_audio = extract_audio
+        self.verbose = verbose
         self._api_limiter = ApiRateLimiter(
             rps=self.rate_limit_config.rps, enabled=self.rate_limit_config.enabled
         )
@@ -355,257 +331,6 @@ class TiktokAPI:
         except Exception as e:
             raise RuntimeError(f"get_profile failed for @{username}: {e}") from e
 
-    def _fetch_posts_via_playwright(
-        self,
-        username: str,
-        limit: int | None,
-        *,
-        exclude_reposts: bool = True,
-        report: ScrapeReport | None = None,
-    ) -> DomScrape:
-        _require_playwright()
-
-        from playwright.sync_api import sync_playwright
-
-        if report is None:
-            report = getattr(self, "last_report", None)
-        if report is None:
-            report = ScrapeReport()
-
-        pw = to_playwright_cookies(self.cookies)
-        captured: list[Any] = []
-        posts: list[Post] = []
-        seen_ids: set[str] = set()
-
-        def on_response(resp: Any) -> None:
-            try:
-                ct = resp.headers.get("content-type", "")
-                if "json" not in ct:
-                    return
-                u = resp.url.lower()
-                path = u.split("?")[0]
-                # Only capture the profile's own posts endpoint.
-                if "/api/post/item_list/" not in path:
-                    return
-                try:
-                    j = resp.json()
-                except Exception:
-                    return
-                captured.append(j)
-            except Exception:
-                pass
-
-        with sync_playwright() as p:
-            b = p.chromium.launch(headless=True, args=chromium_launch_args())
-            ctx = b.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-                ),
-                locale="en-US",
-            )
-            if pw:
-                try:
-                    ctx.add_cookies(pw)  # type: ignore[arg-type]
-                except Exception:
-                    pass
-            ctx.add_init_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-            )
-            page = ctx.new_page()
-
-            page.on("response", on_response)
-            page.goto(
-                f"https://www.tiktok.com/@{username}",
-                wait_until="domcontentloaded",
-                timeout=45000,
-            )
-            page.wait_for_timeout(5000)
-
-            # Capture target secUid from universal data
-            try:
-                ud = page.evaluate(
-                    "() => { const s = document.querySelector("
-                    "'script#__UNIVERSAL_DATA_FOR_REHYDRATION__'); "
-                    "return s ? s.textContent : null; }"
-                )
-                if ud:
-                    import json as _json
-                    _data = _json.loads(ud)
-                    _scope = _data.get("__DEFAULT_SCOPE__", {})
-                    _ud = _scope.get("webapp.user-detail", {})
-                    _ui = _ud.get("userInfo", {})
-                    _u = _ui.get("user", {})
-                    self._target_secuid = _u.get("secUid")
-            except Exception:
-                self._target_secuid = None
-
-            # Scroll to trigger more posts
-            empty_rounds = 0
-            empty_limit = 4
-            prev_count = 0
-            max_scrolls = 40
-            reason = ""
-            for _scroll in range(max_scrolls):
-                page.mouse.wheel(0, 3000)
-                page.wait_for_timeout(2500)
-
-                if limit is not None and len(posts) >= limit:
-                    reason = "limit reached"
-                    break
-
-                try:
-                    cur = page.evaluate(
-                        "() => document.querySelectorAll('[data-e2e=\"user-post-item\"]').length"
-                    )
-                except Exception:
-                    cur = len(posts)
-                if cur == prev_count:
-                    empty_rounds += 1
-                    if empty_rounds >= empty_limit:
-                        reason = "profile stopped rendering new posts"
-                        break
-                else:
-                    empty_rounds = 0
-                prev_count = cur
-            else:
-                reason = "scroll ceiling reached"
-
-            # DOM fallback: if XHR capture was blocked/empty, collect post
-            # links directly from the rendered profile page and resolve each
-            # post's universal data.
-            if not posts and not captured:
-                try:
-                    dom_links = page.eval_on_selector_all(
-                        'a[href*="/video/"], a[href*="/photo/"]',
-                        "els => els.map(e => e.href)",
-                    )
-                except Exception:
-                    dom_links = []
-                seen_links: set[str] = set()
-                for link in dom_links or []:
-                    if f"/@{username}/" not in link:
-                        continue
-                    if "/video/" not in link and "/photo/" not in link:
-                        continue
-                    base = link.split("?")[0]
-                    if base in seen_links:
-                        continue
-                    seen_links.add(base)
-                    try:
-                        sub = ctx.new_page()
-                        sub.goto(base, wait_until="domcontentloaded", timeout=30000)
-                        sub.wait_for_timeout(3000)
-                        ud = sub.evaluate(
-                            "() => { const s = document.querySelector("
-                            "'script#__UNIVERSAL_DATA_FOR_REHYDRATION__'); "
-                            "return s ? s.textContent : null; }"
-                        )
-                        sub.close()
-                    except Exception:
-                        try:
-                            sub.close()
-                        except Exception:
-                            pass
-                        continue
-                    if not ud:
-                        continue
-                    try:
-                        import json as _json
-                        _data = _json.loads(ud)
-                        _scope = _data.get("__DEFAULT_SCOPE__", {})
-                        _vd = _scope.get("webapp.video-detail", {})
-                        _ii = _vd.get("itemInfo", {}) or {}
-                        item = _ii.get("itemStruct")
-                    except Exception:
-                        item = None
-                    if not item:
-                        continue
-                    author = item.get("author") or {}
-                    if exclude_reposts:
-                        if (
-                            author.get("uniqueId")
-                            and str(author.get("uniqueId")).lower()
-                            != username.lower()
-                        ):
-                            report.reposts_skipped += 1
-                            continue
-                        if item.get("originalItem") is True:
-                            report.reposts_skipped += 1
-                            continue
-                        target_secuid = getattr(self, "_target_secuid", None)
-                        if (
-                            target_secuid
-                            and author.get("secUid")
-                            and author.get("secUid") != target_secuid
-                        ):
-                            report.reposts_skipped += 1
-                            continue
-                    post = parse_item(
-                        item, fallback_username=username,
-                        extract_audio=self.extract_audio,
-                    )
-                    if not post or post.id in seen_ids:
-                        continue
-                    seen_ids.add(post.id)
-                    posts.append(post)
-                    if limit is not None and len(posts) >= limit:
-                        break
-
-            b.close()
-
-        # Parse captured responses, keeping only items whose id is in dom_ids.
-        # If dom_ids is empty, fall back to all items (best effort).
-        for j in captured:
-            if not isinstance(j, dict):
-                continue
-            items = j.get("itemList") or j.get("item_list") or []
-            if not items:
-                continue
-            for it in items:
-                author = it.get("author") or {}
-                author_username = author.get("uniqueId")
-                author_secuid = author.get("secUid", "")
-
-                if exclude_reposts:
-                    is_repost = False
-                    if (
-                        author_username
-                        and str(author_username).lower() != username.lower()
-                    ):
-                        is_repost = True
-                    if it.get("originalItem") is True:
-                        is_repost = True
-                    target_secuid = getattr(self, "_target_secuid", None)
-                    if (
-                        target_secuid
-                        and author_secuid
-                        and author_secuid != target_secuid
-                    ):
-                        is_repost = True
-                    if is_repost:
-                        report.reposts_skipped += 1
-                        continue
-                post = parse_item(
-                        it, fallback_username=username,
-                        extract_audio=self.extract_audio,
-                    )
-                if not post:
-                    continue
-                if post.id in seen_ids:
-                    continue
-                seen_ids.add(post.id)
-                posts.append(post)
-                if limit is not None and len(posts) >= limit:
-                    break
-            if limit is not None and len(posts) >= limit:
-                break
-
-        if limit is not None:
-            posts = posts[:limit]
-        exhausted = reason.startswith("limit") or reason.startswith("profile stopped")
-        return DomScrape(posts=posts, exhausted=exhausted, reason=reason)
-
     def _fetch_post_from_page(
         self, username: str, post_id: str, item: dict[str, Any] | None = None
     ) -> Post | None:
@@ -788,7 +513,7 @@ class TiktokAPI:
 
     def iter_posts(
         self, username: str, *, limit: int | None = None, exclude_reposts: bool = True,
-        concurrency: int = 4, download_concurrency: int | None = None,
+        concurrency: int = 4,
     ):
         username = username.lstrip("@").split("/")[0]
         report = ScrapeReport(limit=limit)
@@ -797,6 +522,9 @@ class TiktokAPI:
         secuid = self._extract_sec_uid(username)
         if not secuid:
             _warn(f"could not resolve secUid for @{username}.")
+            report.used_fallback = False
+            report.stop_reason = "secUid not resolved"
+            report.api_error = report.api_error or "could not resolve secUid"
             _finish_report(report, [])
             return []
 
@@ -886,7 +614,8 @@ class TiktokAPI:
                     break
 
             report.pages_fetched = pages
-            _warn(f"listing posts… page {pages} ({len(candidate_ids)} found)")
+            if self.verbose:
+                _warn(f"listing posts… page {pages} ({len(candidate_ids)} found)")
 
             # Rehydrate this page immediately (parallel), before next page.
             if page_ids:
@@ -900,7 +629,8 @@ class TiktokAPI:
                         done_page += 1
                         done_total += 1
                         if done_page == total_page or done_page % 5 == 0:
-                            _warn(f"fetching posts… {done_total}/{len(candidate_ids)}")
+                            if self.verbose:
+                                _warn(f"fetching posts… {done_total}/{len(candidate_ids)}")
                         if post and post.id not in seen_ids:
                             seen_ids.add(post.id)
                             posts.append(post)
@@ -911,7 +641,12 @@ class TiktokAPI:
             if limit is not None and len(candidate_ids) >= limit:
                 break
 
-            if not data.get("hasMorePrevious", False):
+            has_more = data.get("hasMore")
+            if has_more is None:
+                has_more = data.get("hasMorePrevious")
+            if has_more is None:
+                has_more = data.get("has_more")
+            if not has_more:
                 break
             try:
                 new_cursor = int(items[-1].get("createTime", 0)) * 1000
@@ -934,12 +669,12 @@ class TiktokAPI:
 
     def get_posts(
         self, username: str, *, limit: int | None = None, exclude_reposts: bool = True,
-        concurrency: int = 4, download_concurrency: int | None = None,
+        concurrency: int = 4,
     ) -> list[Post]:
         return list(
             self.iter_posts(
                 username, limit=limit, exclude_reposts=exclude_reposts,
-                concurrency=concurrency, download_concurrency=download_concurrency,
+                concurrency=concurrency,
             )
         )
 
