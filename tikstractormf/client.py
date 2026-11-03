@@ -132,6 +132,14 @@ class Tiktokscraper:
             )
         )
 
+    def iter_stories(self, username: str, *, limit: int | None = None, concurrency: int = 4):
+        return self.api.iter_stories(username, limit=limit, concurrency=concurrency)
+
+    def get_stories(
+        self, username: str, *, limit: int | None = None, concurrency: int = 4
+    ) -> list[Post]:
+        return list(self.iter_stories(username, limit=limit, concurrency=concurrency))
+
     @property
     def last_report(self) -> ScrapeReport:
         """Counters for the most recent get_posts() call."""

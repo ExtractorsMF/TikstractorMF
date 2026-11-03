@@ -114,6 +114,8 @@ def _split_subfolder(media: Media, dest: Path) -> str | None:
     """
     if media.id.endswith("_profile"):
         return None if dest.name == "profile" else "profile"
+    if getattr(media, "story", False):
+        return None if dest.name == "stories" else "stories"
     if dest.name in CONTENT_DIRS:
         return None
     if media.type == "video":

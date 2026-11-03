@@ -26,6 +26,7 @@ class Media(BaseModel):
     url: str
     fallback_urls: list[str] = Field(default_factory=list)
     ext: str = Field(description="jpg|mp4|webp... derived from URL")
+    story: bool = Field(default=False, description="True when media belongs to a story")
     width: int | None = None
     height: int | None = None
 

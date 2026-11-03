@@ -233,6 +233,154 @@ def parse_item(item: dict, fallback_username: str | None = None,
         return None
 
 
+def parse_story_item(item: dict, fallback_username: str | None = None,
+                    extract_audio: bool = True) -> Post | None:
+    """Parse one TikTok story item into a Post."""
+    try:
+        sid = str(item.get("id") or "")
+        if not sid:
+            return None
+        author = item.get("author") or {}
+        username = author.get("uniqueId") or fallback_username or "unknown"
+        create_time = item.get("createTime")
+        datetime_iso = None
+        if create_time:
+            try:
+                datetime_iso = datetime.fromtimestamp(int(create_time), tz=timezone.utc).isoformat()
+            except Exception:
+                pass
+        permalink = f"https://www.tiktok.com/@{username}"
+
+        medias: list[Media] = []
+        video = item.get("video") or {}
+        play_addr = video.get("playAddr") or video.get("downloadAddr")
+        # Prefer downloadAddr unless watermarked logo
+        download_addr = video.get("downloadAddr")
+        if download_addr and "logo" in download_addr.lower() and play_addr:
+            primary = play_addr
+        else:
+            primary = download_addr or play_addr
+
+        bitrate_candidates: list[str] = []
+        bitrate_info = video.get("bitrateInfo")
+        if isinstance(bitrate_info, list) and bitrate_info:
+            best_score = -1
+            best_url = None
+            best_list: list[str] = []
+            for bi in bitrate_info:
+                pa = bi.get("PlayAddr") or {}
+                url_list = pa.get("UrlList") or []
+                for u in url_list:
+                    if u and u not in bitrate_candidates:
+                        bitrate_candidates.append(u)
+                w = int(pa.get("Width") or 0)
+                h = int(pa.get("Height") or 0)
+                score = w * h
+                if score > best_score and url_list:
+                    best_score = score
+                    best_url = url_list[0]
+                    best_list = list(url_list)
+            if best_url and best_url not in bitrate_candidates:
+                bitrate_candidates.insert(0, best_url)
+            if not primary and best_url:
+                primary = best_url
+            if best_list:
+                for u in best_list:
+                    if u and u not in bitrate_candidates:
+                        bitrate_candidates.append(u)
+
+        fallback_urls: list[str] = []
+        if primary:
+            for cand in (video.get("playAddr"), video.get("downloadAddr"), *bitrate_candidates):
+                if cand and cand != primary and cand not in fallback_urls:
+                    fallback_urls.append(cand)
+            ext = _guess_ext(primary, video.get("format"))
+            medias.append(
+                Media(
+                    id=sid, post_id=sid, index=1, type="video", url=primary,
+                    fallback_urls=fallback_urls, ext=ext, story=True,
+                )
+            )
+
+        # imagePost (if present)
+        image_post = item.get("imagePost") or {}
+        images = image_post.get("images") or []
+        if images and not primary:
+            for idx, img in enumerate(images):
+                iu = None
+                img_fallbacks: list[str] = []
+                if isinstance(img, dict):
+                    raw = img.get("imageURL")
+                    if isinstance(raw, dict):
+                        ul = raw.get("urlList") or raw.get("UrlList") or []
+                        if ul:
+                            iu = ul[0]
+                            img_fallbacks = [u for u in ul[1:] if u]
+                    elif isinstance(raw, str):
+                        iu = raw
+                    iu = iu or img.get("displayImage") or img.get("url")
+                    if not iu and isinstance(img.get("image"), dict):
+                        iu2 = img["image"].get("url") or img["image"].get("imageURL")
+                        if isinstance(iu2, dict):
+                            ul2 = iu2.get("urlList") or iu2.get("UrlList") or []
+                            if ul2:
+                                iu = ul2[0]
+                                img_fallbacks = [u for u in ul2[1:] if u]
+                        elif isinstance(iu2, str):
+                            iu = iu2
+                if not iu:
+                    continue
+                ext = _guess_ext(iu)
+                mid = sid if len(images) == 1 else f"{sid}_{idx + 1}"
+                medias.append(
+                    Media(
+                        id=mid, post_id=sid, index=idx + 1, type="image", url=iu,
+                        fallback_urls=img_fallbacks, ext=ext, story=True,
+                    )
+                )
+
+        # Audio for image stories
+        music = item.get("music") or {}
+        music_url = music.get("playUrl")
+        if extract_audio and images and not primary and music_url:
+            ext = _guess_ext(music_url)
+            medias.append(
+                Media(
+                    id=f"{sid}_audio",
+                    post_id=sid,
+                    index=len(images) + 1,
+                    type="audio",
+                    url=music_url,
+                    ext=ext if ext in {"mp3", "m4a", "aac", "wav", "ogg"} else "mp3",
+                    story=True,
+                )
+            )
+
+        if not medias and (video.get("cover") or video.get("originCover")):
+            cover = video.get("cover") or video.get("originCover")
+            if isinstance(cover, str):
+                ext = _guess_ext(cover)
+                medias.append(
+                    Media(
+                        id=sid, post_id=sid, index=1, type="image",
+                        url=cover, ext=ext, story=True,
+                    )
+                )
+
+        if not medias:
+            return None
+        return Post(
+            id=sid,
+            permalink=permalink,
+            username=username,
+            caption=item.get("desc"),
+            datetime_iso=datetime_iso,
+            media=medias,
+        )
+    except Exception:
+        return None
+
+
 def _pick_best_image(candidates):
     if not candidates:
         return None

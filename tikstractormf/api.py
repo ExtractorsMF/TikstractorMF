@@ -16,7 +16,7 @@ from tikstractormf._backend import (
     CurlClient,
     is_transient_error,
 )
-from tikstractormf._parsing import parse_item, parse_profile_html
+from tikstractormf._parsing import parse_item, parse_profile_html, parse_story_item
 from tikstractormf.models import Media, Post, Profile
 from tikstractormf.rate_limit import (
     ApiRateLimiter,
@@ -677,6 +677,156 @@ class TiktokAPI:
                 concurrency=concurrency,
             )
         )
+
+    def _extract_author_id(self, username: str) -> str | None:
+        html = self._profile_html(username)
+        if not html:
+            return None
+        import json as _json
+        import re as _re
+        m = _re.search(
+            r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)</script>',
+            html,
+            _re.S,
+        )
+        if m:
+            try:
+                data = _json.loads(m.group(1))
+                scope = data.get("__DEFAULT_SCOPE__", {})
+                ud = scope.get("webapp.user-detail", {})
+                ui = ud.get("userInfo", {})
+                u = ui.get("user", {})
+                aid = u.get("id")
+                if aid:
+                    return str(aid)
+            except Exception:
+                pass
+        m = _re.search(r'"id"\s*:\s*"(\d{5,})"', html)
+        if m:
+            return m.group(1)
+        return None
+
+    def _build_story_list_url(self, author_id: str, cursor: int) -> str:
+        from urllib.parse import urlencode
+
+        params = {
+            "aid": "1988",
+            "app_name": "tiktok_web",
+            "device_platform": "web_pc",
+            "authorId": author_id,
+            "count": "4",
+            "cursor": str(cursor),
+            "loadBackward": "false",
+        }
+        return "https://www.tiktok.com/api/story/item_list/?" + urlencode(params)
+
+    def iter_stories(
+        self, username: str, *, limit: int | None = None, concurrency: int = 4,
+    ):
+        username = username.lstrip("@").split("/")[0]
+        report = self.last_report
+        if report is None:
+            report = ScrapeReport(limit=limit)
+            self.last_report = report
+
+        author_id = self._extract_author_id(username)
+        if not author_id:
+            _warn(f"could not resolve authorId for @{username}.")
+            return
+
+        seen_cursors: set[int] = set()
+        cursor = 0
+        seen_ids: set[str] = set()
+        stories: list[Post] = []
+        pages = 0
+
+        while True:
+            if limit is not None and len(stories) >= limit:
+                break
+            if cursor in seen_cursors:
+                break
+            seen_cursors.add(cursor)
+            pages += 1
+            url = self._build_story_list_url(author_id, cursor)
+            try:
+                resp = self._request_with_rate_limit(
+                    "GET",
+                    url,
+                    headers={
+                        "Accept": "application/json, text/plain, */*",
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/131.0.0.0 Safari/537.36"
+                        ),
+                        "Referer": f"https://www.tiktok.com/@{username}",
+                    },
+                )
+            except Exception as exc:
+                report.api_error = str(exc)
+                break
+            try:
+                data = resp.json()
+            except Exception as exc:
+                report.api_error = f"invalid json: {exc}"
+                break
+
+            items = data.get("itemList") or data.get("item_list") or []
+            if not items:
+                break
+
+            page_ids: list[str] = []
+            for it in items:
+                sid = str(it.get("id") or "")
+                if not sid or sid in seen_ids:
+                    continue
+                seen_ids.add(sid)
+                page_ids.append(sid)
+                if limit is not None and len(stories) + len(page_ids) >= limit:
+                    break
+
+            # Rehydrate not needed; parse directly
+            for it in items:
+                sid = str(it.get("id") or "")
+                if sid not in page_ids:
+                    continue
+                post = parse_story_item(it, fallback_username=username, extract_audio=True)
+                if not post:
+                    continue
+                if post.id in {p.id for p in stories}:
+                    continue
+                stories.append(post)
+                yield post
+                if limit is not None and len(stories) >= limit:
+                    break
+
+            if limit is not None and len(stories) >= limit:
+                break
+
+            has_more = data.get("HasMoreAfter")
+            if has_more is None:
+                has_more = data.get("hasMore")
+            if not has_more:
+                break
+            new_cursor = data.get("MaxCursor")
+            try:
+                new_cursor = int(new_cursor)
+            except (TypeError, ValueError):
+                break
+            if not new_cursor or new_cursor == cursor:
+                break
+            cursor = new_cursor
+
+        report.used_fallback = False
+        if not stories:
+            _warn(f"no stories found for @{username}.")
+        _finish_report(report, stories)
+        return
+
+    def get_stories(
+        self, username: str, *, limit: int | None = None, concurrency: int = 4,
+    ) -> list[Post]:
+        return list(self.iter_stories(username, limit=limit, concurrency=concurrency))
 
     def close(self) -> None:
         if self._client:

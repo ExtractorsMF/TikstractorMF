@@ -143,6 +143,7 @@ def main(
     dest: Path = typer.Option(Path("./dl"), "--dest", "-d", help="Output directory"),
     limit: int | None = typer.Option(None, "--limit", "-l", help="Posts limit (default all)"),
     profile_pic_only: bool = typer.Option(False, "--profile-pic-only", help="Profile pic only"),
+    only_stories: bool = typer.Option(False, "--only-stories", help="Stories only"),
     photos_only: bool = typer.Option(False, "--photos-only", help="Photos only"),
     videos_only: bool = typer.Option(False, "--videos-only", help="Videos only"),
     audio_only: bool = typer.Option(False, "--audio-only", help="Audio only"),
@@ -280,6 +281,7 @@ def main(
         dest=dest,
         limit=limit,
         profile_pic_only=profile_pic_only,
+        only_stories=only_stories,
         photos_only=photos_only,
         videos_only=videos_only,
         audio_only=audio_only,
@@ -321,6 +323,7 @@ def _execute_scrape(
     dest: Path,
     limit: int | None,
     profile_pic_only: bool,
+    only_stories: bool,
     photos_only: bool,
     videos_only: bool,
     audio_only: bool,
@@ -412,7 +415,7 @@ def _execute_scrape(
             )
             console.print(f"[green]profile pic -> {out}[/green]", soft_wrap=True)
             return
-        is_all = not photos_only and not videos_only and not profile_pic_only
+        is_all = not photos_only and not videos_only and not profile_pic_only and not only_stories
         retry_ids = set()
         if retry_failed:
             for part in retry_failed.split(","):
@@ -478,12 +481,38 @@ def _execute_scrape(
 
         futures = []
         with ThreadPoolExecutor(max_workers=max(1, download_concurrency or 1)) as ex:
-            for post in scraper.iter_posts(
+            if not only_stories:
+                for post in scraper.iter_posts(
+                    username, limit=limit, concurrency=concurrency
+                ):
+                    if report is None:
+                        report = scraper.last_report
+                    for media in post.media:
+                        if retry_ids and media.id not in retry_ids:
+                            continue
+                        if photos_only and media.type != "image":
+                            report.filtered += 1
+                            continue
+                        if videos_only and media.type != "video":
+                            report.filtered += 1
+                            continue
+                        if audio_only and media.type != "audio":
+                            report.filtered += 1
+                            continue
+                        if media.type == "audio" and not with_audio:
+                            report.filtered += 1
+                            continue
+                        if get_urls:
+                            console.print(media.url, soft_wrap=True)
+                            continue
+                        futures.append(ex.submit(_download_one, post, media))
+            # Stories: always include audio (not optional)
+            for story in scraper.iter_stories(
                 username, limit=limit, concurrency=concurrency
             ):
                 if report is None:
                     report = scraper.last_report
-                for media in post.media:
+                for media in story.media:
                     if retry_ids and media.id not in retry_ids:
                         continue
                     if photos_only and media.type != "image":
@@ -495,15 +524,10 @@ def _execute_scrape(
                     if audio_only and media.type != "audio":
                         report.filtered += 1
                         continue
-                    if media.type == "audio" and not with_audio:
-                        report.filtered += 1
-                        continue
                     if get_urls:
-                        # Dry run: print the URL and move on, leaving the pacing
-                        # limiter alone (a scrape still must not hammer the API).
                         console.print(media.url, soft_wrap=True)
                         continue
-                    futures.append(ex.submit(_download_one, post, media))
+                    futures.append(ex.submit(_download_one, story, media))
             for f in futures:
                 f.result()
 
