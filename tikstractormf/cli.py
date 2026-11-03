@@ -199,6 +199,12 @@ def main(
         "--get-urls",
         help="Print the media URLs instead of downloading (dry run)",
     ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Show progress messages (listing/fetching posts)",
+    ),
 ) -> None:
     """Download TikTok media by post_id."""
     # normalize @user — supports tiktok.com URLs or @handle
@@ -294,6 +300,7 @@ def main(
         archive=archive,
         no_adopt_existing=no_adopt_existing,
         get_urls=get_urls,
+        verbose=verbose,
     )
 
 
@@ -334,6 +341,7 @@ def _execute_scrape(
     archive: bool = False,
     no_adopt_existing: bool = False,
     get_urls: bool = False,
+    verbose: bool = False,
 ) -> None:
     from tikstractormf.client import Tiktokscraper
 
@@ -349,6 +357,7 @@ def _execute_scrape(
         archive=archive,
         diagnostics_dir=diagnostics_dir,
         with_audio=with_audio,
+        verbose=verbose,
     )
     adopt_existing = not no_adopt_existing
     # resolve directory_template -> final dest

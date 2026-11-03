@@ -208,3 +208,40 @@ def test_capture_rotated_cookies_noop_on_none():
     api = TiktokAPI(cookies=None)
     # Should not raise
     api._capture_rotated_cookies(None)
+
+
+def test_verbose_false_suppresses_progress(capsys):
+    api = TiktokAPI(cookies=None, verbose=False)
+    api._extract_sec_uid = lambda username: "sec123"  # type: ignore[assignment]
+    with respx.mock:
+        respx.get(url__regex=r".*creator/item_list.*").mock(
+            return_value=httpx.Response(200, json={
+                "itemList": [_item("1", 1700000000)],
+                "hasMorePrevious": False,
+            })
+        )
+        respx.get(url__regex=r".*tiktok\.com/@user1/video/.*").mock(
+            return_value=httpx.Response(403)
+        )
+        api.get_posts("user1", limit=1, concurrency=1)
+    captured = capsys.readouterr()
+    assert "listing posts" not in captured.err
+    assert "fetching posts" not in captured.err
+
+
+def test_verbose_true_shows_progress(capsys):
+    api = TiktokAPI(cookies=None, verbose=True)
+    api._extract_sec_uid = lambda username: "sec123"  # type: ignore[assignment]
+    with respx.mock:
+        respx.get(url__regex=r".*creator/item_list.*").mock(
+            return_value=httpx.Response(200, json={
+                "itemList": [_item("1", 1700000000)],
+                "hasMorePrevious": False,
+            })
+        )
+        respx.get(url__regex=r".*tiktok\.com/@user1/video/.*").mock(
+            return_value=httpx.Response(403)
+        )
+        api.get_posts("user1", limit=1, concurrency=1)
+    captured = capsys.readouterr()
+    assert "listing posts" in captured.err

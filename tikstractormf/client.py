@@ -57,6 +57,7 @@ class Tiktokscraper:
         archive: bool = False,
         diagnostics_dir: str | Path | None = None,
         with_audio: bool = False,
+        verbose: bool = False,
     ):
         if isinstance(cookies, (str, Path)):
             cookies = load_netscape_cookies(cookies)
@@ -82,6 +83,7 @@ class Tiktokscraper:
         self.archive = archive
         self.diagnostics_dir = diagnostics_dir
         self.with_audio = with_audio
+        self.verbose = verbose
         self._consecutive_403: list[int] = [0]
         self._ledgers: dict[str, DownloadLedger] = {}
         self._download_client: Any = None
@@ -103,6 +105,7 @@ class Tiktokscraper:
         self.api = TiktokAPI(
             cookies, impersonate=impersonate, timeout=timeout, rate_limit_config=cfg,
             extract_audio=with_audio,
+            verbose=verbose,
         )
 
     # --- API delegada ---

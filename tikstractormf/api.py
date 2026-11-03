@@ -80,6 +80,7 @@ class TiktokAPI:
         timeout: float = 15.0,
         rate_limit_config: RateLimitConfig | None = None,
         extract_audio: bool = False,
+        verbose: bool = False,
     ):
         if isinstance(cookies, (str, Path)):
             from tikstractormf.auth import load_netscape_cookies
@@ -91,6 +92,7 @@ class TiktokAPI:
         self._owns_client = False
         self.rate_limit_config = rate_limit_config or RateLimitConfig()
         self.extract_audio = extract_audio
+        self.verbose = verbose
         self._api_limiter = ApiRateLimiter(
             rps=self.rate_limit_config.rps, enabled=self.rate_limit_config.enabled
         )
@@ -612,7 +614,8 @@ class TiktokAPI:
                     break
 
             report.pages_fetched = pages
-            _warn(f"listing posts… page {pages} ({len(candidate_ids)} found)")
+            if self.verbose:
+                _warn(f"listing posts… page {pages} ({len(candidate_ids)} found)")
 
             # Rehydrate this page immediately (parallel), before next page.
             if page_ids:
@@ -626,7 +629,8 @@ class TiktokAPI:
                         done_page += 1
                         done_total += 1
                         if done_page == total_page or done_page % 5 == 0:
-                            _warn(f"fetching posts… {done_total}/{len(candidate_ids)}")
+                            if self.verbose:
+                                _warn(f"fetching posts… {done_total}/{len(candidate_ids)}")
                         if post and post.id not in seen_ids:
                             seen_ids.add(post.id)
                             posts.append(post)
