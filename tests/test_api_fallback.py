@@ -197,3 +197,14 @@ def test_iter_posts_no_secuid_used_fallback_false():
     posts = api.get_posts("user1")
     assert posts == []
     assert api.last_report.used_fallback is False
+
+
+def test_solve_challenge_returns_false_without_challenge():
+    api = TiktokAPI(cookies=None)
+    assert api._solve_challenge("<html>no challenge</html>") is False
+
+
+def test_capture_rotated_cookies_noop_on_none():
+    api = TiktokAPI(cookies=None)
+    # Should not raise
+    api._capture_rotated_cookies(None)
