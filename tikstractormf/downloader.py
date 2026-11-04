@@ -363,15 +363,12 @@ def download_media(
     dest.mkdir(parents=True, exist_ok=True)
 
     if filename_template:
-        # For profile, ignore date template and use simple username
-        if media.id.endswith("_profile") and "{date" in filename_template:
-            filename = media.filename(
-                template="{username}_profile.{extension}", username=username, date_iso=date_iso
-            )
-        else:
-            filename = media.filename(
-                template=filename_template, username=username, date_iso=date_iso
-            )
+        # Apply the user template verbatim, including {date}, for every media type
+        # (profile pics included). Profile pics have no real post date, so {date}
+        # falls back to "now" in render_filename; that is the caller's choice.
+        filename = media.filename(
+            template=filename_template, username=username, date_iso=date_iso
+        )
     else:
         filename = media.filename()
     filename = sanitize_filename(filename)
@@ -535,6 +532,8 @@ def download_profile_pic(
     limiter: BatchCooldownLimiter | None = None,
     rate_limit: bool = True,
     filename_template: str | None = None,
+    date_iso: str | None = None,
+    overwrite: bool = False,
     ledger: DownloadLedger | None = None,
     adopt_existing: bool = True,
     headers: dict[str, str] | None = None,
@@ -560,14 +559,15 @@ def download_profile_pic(
         return download_media(
             media, dest, client=client, impersonate=impersonate, limiter=limiter,
             rate_limit=rate_limit, filename_template=filename_template, username=username,
-            ledger=ledger, adopt_existing=adopt_existing, headers=headers,
-            cookies=cookies, diagnostics_dir=diagnostics_dir,
-            skip_on_403=skip_on_403, consecutive_403=consecutive_403,
+            date_iso=date_iso, overwrite=overwrite, ledger=ledger,
+            adopt_existing=adopt_existing, headers=headers, cookies=cookies,
+            diagnostics_dir=diagnostics_dir, skip_on_403=skip_on_403,
+            consecutive_403=consecutive_403,
         )
     return download_media(
         media, dest, client=client, impersonate=impersonate, limiter=limiter,
-        rate_limit=rate_limit, username=username, ledger=ledger,
-        adopt_existing=adopt_existing, headers=headers, cookies=cookies,
+        rate_limit=rate_limit, username=username, date_iso=date_iso, overwrite=overwrite,
+        ledger=ledger, adopt_existing=adopt_existing, headers=headers, cookies=cookies,
         diagnostics_dir=diagnostics_dir, skip_on_403=skip_on_403,
         consecutive_403=consecutive_403,
     )
