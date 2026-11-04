@@ -262,6 +262,7 @@ class Tiktokscraper:
 
     def download_profile_pic(
         self, username: str, dest: str | Path, *, filename_template: str | None = None,
+        date_iso: str | None = None, overwrite: bool = False,
         diagnostics_dir: str | Path | None = None,
         skip_on_403: bool = False,
     ) -> DownloadOutcome:
@@ -279,6 +280,8 @@ class Tiktokscraper:
             limiter=self.download_limiter,
             rate_limit=self.rate_limit,
             filename_template=filename_template,
+            date_iso=date_iso,
+            overwrite=overwrite,
             ledger=self._ledger_for(dest),
             cookies=cookies,
             diagnostics_dir=diag,

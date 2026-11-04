@@ -411,7 +411,7 @@ def _execute_scrape(
                 return
             out = scraper.download_profile_pic(
                 username, final_dest, filename_template=filename_template,
-                skip_on_403=skip_on_403,
+                overwrite=overwrite, skip_on_403=skip_on_403,
             )
             console.print(f"[green]profile pic -> {out}[/green]", soft_wrap=True)
             return
@@ -544,7 +544,7 @@ def _execute_scrape(
                     profile_dest = profile_dest.parent
                 outcome = scraper.download_profile_pic(
                     username, profile_dest, filename_template=filename_template,
-                    skip_on_403=skip_on_403,
+                    overwrite=overwrite, skip_on_403=skip_on_403,
                 )
                 # Not counted through _count: the avatar is not one of the
                 # posts' media, so tallying it made downloaded+skipped exceed
