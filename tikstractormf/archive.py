@@ -122,7 +122,10 @@ class DownloadLedger:
 
     def __init__(self, path: str | Path | None) -> None:
         self.path = Path(path) if path is not None else None
-        self._keys: set[tuple[str, int]] = set()
+        # Key is (post_id, index, version). ``version`` defaults to "" so that
+        # legacy entries (written before versioning existed) keep loading and
+        # matching as the "unversioned" case.
+        self._keys: set[tuple[str, int, str]] = set()
 
     # ── reading ─────────────────────────────────────────────────────────────
 
@@ -144,25 +147,26 @@ class DownloadLedger:
                 if key is not None:
                     self._keys.add(key)
 
-    def has(self, post_id: str, index: int) -> bool:
-        return (post_id, index) in self._keys
+    def has(self, post_id: str, index: int, version: str = "") -> bool:
+        return (post_id, index, version) in self._keys
 
     def __len__(self) -> int:
         return len(self._keys)
 
     # ── writing ─────────────────────────────────────────────────────────────
 
-    def record(self, post_id: str, index: int, path: str | Path) -> None:
-        """Mark ``(post_id, index)`` as present on disk."""
+    def record(self, post_id: str, index: int, path: str | Path, version: str = "") -> None:
+        """Mark ``(post_id, index, version)`` as present on disk."""
         if self.path is None:
             return
-        key = (post_id, index)
+        key = (post_id, index, version)
         if key in self._keys:
             return
         self._keys.add(key)
         entry = {
             "post_id": post_id,
             "index": index,
+            "version": version,
             "path": str(path),
             "t": int(time.time()),
         }
@@ -177,7 +181,7 @@ class DownloadLedger:
             pass
 
 
-def _entry_key(entry: Any) -> tuple[str, int] | None:
+def _entry_key(entry: Any) -> tuple[str, int, str] | None:
     if not isinstance(entry, dict):
         return None
     post_id = entry.get("post_id")
@@ -186,7 +190,10 @@ def _entry_key(entry: Any) -> tuple[str, int] | None:
     index = entry.get("index", 1)
     if not isinstance(index, int):
         return None
-    return (post_id, index)
+    version = entry.get("version", "")
+    if not isinstance(version, str):
+        version = ""
+    return (post_id, index, version)
 
 
 # ── legacy-file adoption ───────────────────────────────────────────────────

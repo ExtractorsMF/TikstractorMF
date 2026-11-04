@@ -44,6 +44,7 @@ class Media(BaseModel):
         category: str = "tiktok",
         subcategory: str = "posts",
         date_iso: str | None = None,
+        version: str | None = None,
     ) -> str:
         """Generate filename. If template is None uses simple post_id naming,
         otherwise gallery-dl style template."""
@@ -60,6 +61,7 @@ class Media(BaseModel):
                 extension=self.ext,
                 num=self.index,
                 date_iso=date_iso,
+                version=version or "",
             )
         # For profile pics, id is already username_profile
         if self.post_id.endswith("_profile"):

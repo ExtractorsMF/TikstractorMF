@@ -321,6 +321,7 @@ def download_media(
     filename_template: str | None = None,
     username: str | None = None,
     date_iso: str | None = None,
+    version: str | None = None,
     ledger: DownloadLedger | None = None,
     adopt_existing: bool = True,
     headers: dict[str, str] | None = None,
@@ -362,12 +363,14 @@ def download_media(
     dest = root / subfolder if subfolder else root
     dest.mkdir(parents=True, exist_ok=True)
 
+    _version = version or ""
     if filename_template:
         # Apply the user template verbatim, including {date}, for every media type
         # (profile pics included). Profile pics have no real post date, so {date}
         # falls back to "now" in render_filename; that is the caller's choice.
         filename = media.filename(
-            template=filename_template, username=username, date_iso=date_iso
+            template=filename_template, username=username, date_iso=date_iso,
+            version=_version,
         )
     else:
         filename = media.filename()
@@ -376,12 +379,12 @@ def download_media(
 
     if not overwrite:
         # 1. the ledger knows about it under any name
-        if ledger is not None and ledger.has(media.post_id, media.index):
+        if ledger is not None and ledger.has(media.post_id, media.index, _version):
             return DownloadOutcome(out, DownloadStatus.SKIPPED)
         # 2. the exact file is already there -> adopt it into the ledger
         if out.exists():
             if ledger is not None:
-                ledger.record(media.post_id, media.index, out)
+                ledger.record(media.post_id, media.index, out, _version)
             return DownloadOutcome(out, DownloadStatus.ADOPTED)
         # 3. the same post under a *different* name (extension fix, template
         #    change, date rollover). The ledger starts empty on the first run
@@ -389,7 +392,7 @@ def download_media(
         if adopt_existing and ledger is not None:
             adopted = find_existing_for_post(dest, media.post_id, media.index)
             if adopted is not None:
-                ledger.record(media.post_id, media.index, adopted)
+                ledger.record(media.post_id, media.index, adopted, _version)
                 return DownloadOutcome(adopted, DownloadStatus.ADOPTED)
 
     # Anti rate-limit: wait cooldown before downloading (port background.js:789-792)
@@ -463,7 +466,7 @@ def download_media(
                     if hasattr(use_limiter, "increment"):
                         use_limiter.increment()
                     if ledger is not None:
-                        ledger.record(media.post_id, media.index, out)
+                        ledger.record(media.post_id, media.index, out, _version)
                     return DownloadOutcome(out, DownloadStatus.DOWNLOADED)
                 except Exception as e:
                     last_exc = e
@@ -534,6 +537,7 @@ def download_profile_pic(
     filename_template: str | None = None,
     date_iso: str | None = None,
     overwrite: bool = False,
+    version: str | None = None,
     ledger: DownloadLedger | None = None,
     adopt_existing: bool = True,
     headers: dict[str, str] | None = None,
@@ -543,6 +547,9 @@ def download_profile_pic(
     consecutive_403: list[int] | None = None,
 ) -> DownloadOutcome:
     """Download profile pic with id f"{username}_profile"."""
+    import hashlib
+    from urllib.parse import urlparse
+
     from tikstractormf._parsing import _guess_ext
     from tikstractormf.models import Media
 
@@ -555,19 +562,29 @@ def download_profile_pic(
         url=url,
         ext=ext,
     )
-    if filename_template:
+    # Derive a stable version from the URL path (ignores expire/signature query).
+    if version is None:
+        stable = urlparse(url).path
+        version = hashlib.sha256(stable.encode("utf-8")).hexdigest()[:12] if stable else ""
+    # Force a unique default name per version so avatars do not overwrite each other.
+    effective_template = filename_template
+    if not effective_template and version:
+        effective_template = "{username}_profile_{version}.{extension}"
+    # Disable adoption for avatars: adopting an old file would mask a new version.
+    adopt_existing = False
+    if effective_template:
         return download_media(
             media, dest, client=client, impersonate=impersonate, limiter=limiter,
-            rate_limit=rate_limit, filename_template=filename_template, username=username,
-            date_iso=date_iso, overwrite=overwrite, ledger=ledger,
+            rate_limit=rate_limit, filename_template=effective_template, username=username,
+            date_iso=date_iso, version=version, overwrite=overwrite, ledger=ledger,
             adopt_existing=adopt_existing, headers=headers, cookies=cookies,
             diagnostics_dir=diagnostics_dir, skip_on_403=skip_on_403,
             consecutive_403=consecutive_403,
         )
     return download_media(
         media, dest, client=client, impersonate=impersonate, limiter=limiter,
-        rate_limit=rate_limit, username=username, date_iso=date_iso, overwrite=overwrite,
-        ledger=ledger, adopt_existing=adopt_existing, headers=headers, cookies=cookies,
-        diagnostics_dir=diagnostics_dir, skip_on_403=skip_on_403,
-        consecutive_403=consecutive_403,
+        rate_limit=rate_limit, username=username, date_iso=date_iso, version=version,
+        overwrite=overwrite, ledger=ledger, adopt_existing=adopt_existing,
+        headers=headers, cookies=cookies, diagnostics_dir=diagnostics_dir,
+        skip_on_403=skip_on_403, consecutive_403=consecutive_403,
     )
