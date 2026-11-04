@@ -4,4 +4,4 @@ from tikstractormf.client import Tiktokscraper
 from tikstractormf.models import Media, Post, Profile
 
 __all__ = ["Tiktokscraper", "Post", "Media", "Profile"]
-__version__ = "1.3.1"
+__version__ = "1.4.0"
