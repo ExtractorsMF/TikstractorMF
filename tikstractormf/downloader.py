@@ -322,6 +322,7 @@ def download_media(
     username: str | None = None,
     date_iso: str | None = None,
     version: str | None = None,
+    file_id: str | None = None,
     ledger: DownloadLedger | None = None,
     adopt_existing: bool = True,
     headers: dict[str, str] | None = None,
@@ -364,13 +365,14 @@ def download_media(
     dest.mkdir(parents=True, exist_ok=True)
 
     _version = version or ""
+    _file_id = file_id or ""
     if filename_template:
         # Apply the user template verbatim, including {date}, for every media type
         # (profile pics included). Profile pics have no real post date, so {date}
         # falls back to "now" in render_filename; that is the caller's choice.
         filename = media.filename(
             template=filename_template, username=username, date_iso=date_iso,
-            version=_version,
+            version=_version, file_id=_file_id,
         )
     else:
         filename = media.filename()
@@ -538,6 +540,7 @@ def download_profile_pic(
     date_iso: str | None = None,
     overwrite: bool = False,
     version: str | None = None,
+    file_id: str | None = None,
     ledger: DownloadLedger | None = None,
     adopt_existing: bool = True,
     headers: dict[str, str] | None = None,
@@ -566,25 +569,35 @@ def download_profile_pic(
     if version is None:
         stable = urlparse(url).path
         version = hashlib.sha256(stable.encode("utf-8")).hexdigest()[:12] if stable else ""
-    # Force a unique default name per version so avatars do not overwrite each other.
+    # Derive a human-friendly file_id from the last path segment, falling back to
+    # the version hash when the segment is empty or unusable.
+    if file_id is None:
+        stable = urlparse(url).path
+        base = stable.rsplit("/", 1)[-1] if stable else ""
+        candidate = sanitize_filename(base)
+        if not candidate or len(candidate) > 60:
+            candidate = version or ""
+        file_id = candidate
+    # Force a unique default name per avatar (gallery-dl style: {user}_{file_id}).
     effective_template = filename_template
-    if not effective_template and version:
-        effective_template = "{username}_profile_{version}.{extension}"
+    if not effective_template and file_id:
+        effective_template = "{username}_{file_id}.{extension}"
     # Disable adoption for avatars: adopting an old file would mask a new version.
     adopt_existing = False
     if effective_template:
         return download_media(
             media, dest, client=client, impersonate=impersonate, limiter=limiter,
             rate_limit=rate_limit, filename_template=effective_template, username=username,
-            date_iso=date_iso, version=version, overwrite=overwrite, ledger=ledger,
-            adopt_existing=adopt_existing, headers=headers, cookies=cookies,
+            date_iso=date_iso, version=version, file_id=file_id, overwrite=overwrite,
+            ledger=ledger, adopt_existing=adopt_existing, headers=headers, cookies=cookies,
             diagnostics_dir=diagnostics_dir, skip_on_403=skip_on_403,
             consecutive_403=consecutive_403,
         )
     return download_media(
         media, dest, client=client, impersonate=impersonate, limiter=limiter,
         rate_limit=rate_limit, username=username, date_iso=date_iso, version=version,
-        overwrite=overwrite, ledger=ledger, adopt_existing=adopt_existing,
-        headers=headers, cookies=cookies, diagnostics_dir=diagnostics_dir,
-        skip_on_403=skip_on_403, consecutive_403=consecutive_403,
+        file_id=file_id, overwrite=overwrite, ledger=ledger,
+        adopt_existing=adopt_existing, headers=headers, cookies=cookies,
+        diagnostics_dir=diagnostics_dir, skip_on_403=skip_on_403,
+        consecutive_403=consecutive_403,
     )

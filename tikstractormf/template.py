@@ -26,6 +26,7 @@ def render_filename(
     num: int = 1,
     date_iso: str | None = None,
     version: str = "",
+    file_id: str = "",
 ) -> str:
     # parse date
     dt: datetime | None = None
@@ -79,6 +80,7 @@ def render_filename(
         "{extension}": extension.lstrip("."),
         "{ext}": extension.lstrip("."),
         "{version}": version,
+        "{file_id}": file_id,
     }
     for k, v in replacements.items():
         template = template.replace(k, v)
