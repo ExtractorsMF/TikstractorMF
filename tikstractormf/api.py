@@ -305,6 +305,11 @@ class TiktokAPI:
                     html = str(resp.text)
                 except Exception:
                     pass
+            else:
+                _warn(
+                    f"profile challenge could not be solved for @{username}; "
+                    "results may be incomplete."
+                )
         self._profile_cache[username] = html
         return html
 
@@ -455,14 +460,30 @@ class TiktokAPI:
                 data = _json.loads(m.group(1))
                 scope = data.get("__DEFAULT_SCOPE__", {})
                 ud = scope.get("webapp.user-detail", {})
-                ui = ud.get("userInfo", {})
-                u = ui.get("user", {})
+                status_code = ud.get("statusCode")
+                status_msg = ud.get("statusMsg")
+                ui = ud.get("userInfo", {}) or {}
+                u = ui.get("user", {}) or {}
                 sec = u.get("secUid")
                 if sec:
                     self._sec_uid_cache[username] = str(sec)
                     return self._sec_uid_cache[username]
-            except Exception:
-                pass
+                if status_code is not None and status_code != 0:
+                    _warn(
+                        f"secUid not resolved for @{username}: "
+                        f"statusCode={status_code} statusMsg={status_msg!r}. "
+                        "This usually means the session cookies are missing/expired "
+                        "or the account is private."
+                    )
+                elif "__UNIVERSAL_DATA_FOR_REHYDRATION__" not in html:
+                    _warn(
+                        f"secUid not resolved for @{username}: profile HTML had no "
+                        "rehydration data (possible JS challenge or blocked request)."
+                    )
+            except Exception as exc:
+                _warn(f"secUid not resolved for @{username}: invalid rehydration JSON ({exc}).")
+        else:
+            _warn(f"secUid not resolved for @{username}: no rehydration script in profile HTML.")
         m = _re.search(r"MS4wLjABAAAA[\\w-]{32,64}", html)
         if m:
             self._sec_uid_cache[username] = m.group(0)
@@ -681,6 +702,7 @@ class TiktokAPI:
     def _extract_author_id(self, username: str) -> str | None:
         html = self._profile_html(username)
         if not html:
+            _warn(f"could not fetch profile HTML for @{username}.")
             return None
         import json as _json
         import re as _re
@@ -694,13 +716,33 @@ class TiktokAPI:
                 data = _json.loads(m.group(1))
                 scope = data.get("__DEFAULT_SCOPE__", {})
                 ud = scope.get("webapp.user-detail", {})
-                ui = ud.get("userInfo", {})
-                u = ui.get("user", {})
+                status_code = ud.get("statusCode")
+                status_msg = ud.get("statusMsg")
+                ui = ud.get("userInfo", {}) or {}
+                u = ui.get("user", {}) or {}
                 aid = u.get("id")
                 if aid:
                     return str(aid)
-            except Exception:
-                pass
+                # Surface a diagnostic so an empty userInfo (expired/missing
+                # session) is distinguishable from a genuinely missing account.
+                if status_code is not None and status_code != 0:
+                    _warn(
+                        f"authorId not resolved for @{username}: "
+                        f"statusCode={status_code} statusMsg={status_msg!r}. "
+                        "This usually means the session cookies are missing/expired "
+                        "or the account is private."
+                    )
+                elif "__UNIVERSAL_DATA_FOR_REHYDRATION__" not in html:
+                    _warn(
+                        f"authorId not resolved for @{username}: profile HTML had no "
+                        "rehydration data (possible JS challenge or blocked request)."
+                    )
+            except Exception as exc:
+                _warn(f"authorId not resolved for @{username}: invalid rehydration JSON ({exc}).")
+        else:
+            _warn(
+                f"authorId not resolved for @{username}: no rehydration script in profile HTML."
+            )
         m = _re.search(r'"id"\s*:\s*"(\d{5,})"', html)
         if m:
             return m.group(1)
