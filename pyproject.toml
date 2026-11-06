@@ -22,14 +22,18 @@ dependencies = [
   "pydantic>=2.6",
   "typer>=0.12",
   "rich>=13",
+  # TLS/JA4 impersonation for --impersonate (TikTok WAF inspects the TLS
+  # handshake; curl_cffi reproduces Chrome's byte-for-byte, like yt-dlp).
+  "curl_cffi>=0.7",
+  # Required by auth.load_from_browser (--cookies-from-browser).
+  "browser-cookie3>=0.20",
 ]
 
 [project.optional-dependencies]
-# Optional: TLS/JA4 impersonation for --impersonate (Meta's WAF inspects the
-# TLS handshake; curl_cffi reproduces Chrome's byte-for-byte, like yt-dlp).
-antibot = ["curl_cffi>=0.7"]
-# browser-cookie3 is required by auth.load_from_browser (--cookies-from-browser)
-browser = ["playwright>=1.43", "browser-cookie3>=0.20"]
+# Playwright is only needed for the (optional) browser fallback; Chromium is
+# heavy, so it stays optional. curl_cffi and browser-cookie3 are now core.
+antibot = []
+browser = ["playwright>=1.43"]
 dev = [
   "pytest>=8",
   "respx>=0.22",

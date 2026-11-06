@@ -1679,9 +1679,11 @@ wheels = [
 
 [[package]]
 name = "tikstractormf"
-version = "1.0.0"
+version = "1.3.1"
 source = { editable = "." }
 dependencies = [
+    { name = "browser-cookie3" },
+    { name = "curl-cffi" },
     { name = "httpx", extra = ["http2"] },
     { name = "pydantic" },
     { name = "rich" },
@@ -1689,11 +1691,7 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-antibot = [
-    { name = "curl-cffi" },
-]
 browser = [
-    { name = "browser-cookie3" },
     { name = "playwright" },
 ]
 dev = [
@@ -1707,8 +1705,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "browser-cookie3", marker = "extra == 'browser'", specifier = ">=0.20" },
-    { name = "curl-cffi", marker = "extra == 'antibot'", specifier = ">=0.7" },
+    { name = "browser-cookie3", specifier = ">=0.20" },
+    { name = "curl-cffi", specifier = ">=0.7" },
     { name = "gitpython", marker = "extra == 'dev'", specifier = "<3.1.60" },
     { name = "httpx", extras = ["http2"], specifier = ">=0.27" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
