@@ -1,6 +1,6 @@
 [project]
 name = "tikstractormf"
-version = "1.5.1"
+version = "1.6.0"
 description = "Python library for TikTok - media download by post_id with Netscape cookies auth (gallery-dl compatible)"
 readme = "README.md"
 requires-python = ">=3.10"
