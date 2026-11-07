@@ -124,14 +124,15 @@ class DownloadLedger:
         self.path = Path(path) if path is not None else None
         # Key is (post_id, index, version). ``version`` defaults to "" so that
         # legacy entries (written before versioning existed) keep loading and
-        # matching as the "unversioned" case.
-        self._keys: set[tuple[str, int, str]] = set()
+        # matching as the "unversioned" case. The value is the recorded path (if
+        # any), so a SKIPPED download can report where the file actually lives.
+        self._keys: dict[tuple[str, int, str], Path] = {}
 
     # ── reading ─────────────────────────────────────────────────────────────
 
     def load(self) -> None:
         """Read the ledger into memory. Missing/corrupt lines are skipped."""
-        self._keys = set()
+        self._keys = {}
         if self.path is None or not self.path.exists():
             return
         with self.path.open("r", encoding="utf-8") as fh:
@@ -145,10 +146,20 @@ class DownloadLedger:
                 except Exception:
                     continue  # a torn or hand-edited line must not break a scrape
                 if key is not None:
-                    self._keys.add(key)
+                    path_str = ""
+                    if isinstance(entry, dict):
+                        path_str = str(entry.get("path", "") or "")
+                    self._keys[key] = Path(path_str) if path_str else Path()
 
     def has(self, post_id: str, index: int, version: str = "") -> bool:
         return (post_id, index, version) in self._keys
+
+    def path_for(self, post_id: str, index: int, version: str = "") -> Path | None:
+        """Return the recorded path for an entry, if any."""
+        p = self._keys.get((post_id, index, version))
+        if p is None or str(p) == "":
+            return None
+        return p
 
     def __len__(self) -> int:
         return len(self._keys)
@@ -162,7 +173,7 @@ class DownloadLedger:
         key = (post_id, index, version)
         if key in self._keys:
             return
-        self._keys.add(key)
+        self._keys[key] = Path(path)
         entry = {
             "post_id": post_id,
             "index": index,

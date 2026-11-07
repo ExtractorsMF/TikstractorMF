@@ -382,7 +382,8 @@ def download_media(
     if not overwrite:
         # 1. the ledger knows about it under any name
         if ledger is not None and ledger.has(media.post_id, media.index, _version):
-            return DownloadOutcome(out, DownloadStatus.SKIPPED)
+            recorded = ledger.path_for(media.post_id, media.index, _version)
+            return DownloadOutcome(recorded or out, DownloadStatus.SKIPPED)
         # 2. the exact file is already there -> adopt it into the ledger
         if out.exists():
             if ledger is not None:

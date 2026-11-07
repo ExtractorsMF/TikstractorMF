@@ -8,12 +8,12 @@ TikTok media downloader — Python library + CLI, gallery-dl/yt-dlp compatible c
 - Compact memory: `docs/memory/architecture.md`, `docs/memory/decisions.md`, `docs/memory/state.md`, `docs/memory/conventions.md`, `docs/memory/testing.md`.
 - Detailed docs: `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT.md`, `docs/SECURITY.md`, `docs/PRIVACY.md`, `docs/GIT_WORKFLOW.md`, `docs/DECISIONS.md`.
 - LLM indexes: `llms.txt`, `llms-full.txt`.
-- Agent instructions: `AGENTS.md`.
+- Agent instructions: `../AGENTS.md` (workspace root).
 - Last documentation review: 2026-11-03.
 
 ## Stack
 
-Python ≥ 3.10, `httpx[http2]`, `pydantic`, `typer`, `rich`. Optional: `curl_cffi` (antibot), `playwright` + `browser-cookie3` (browser).
+Python ≥ 3.10, `httpx[http2]`, `pydantic`, `typer`, `rich`. Core: `curl_cffi` (antibot), `browser-cookie3` (browser cookies). Optional: `playwright` (not used by core paths).
 
 ## Install
 
@@ -44,6 +44,8 @@ tikstractormf --cookies cookies.txt --dest ./dl @user
 tikstractormf --cookies-from-browser brave --dest ./dl @user
 tikstractormf --cookies cookies.txt --limit 50 --dest ./dl @user
 tikstractormf --cookies cookies.txt --get-urls --dest ./dl @user
+tikstractormf --cookies cookies.txt --dest ./dl @user --include posts --include profile
+tikstractormf --cookies cookies.txt --dest ./dl @user --stories-only
 tikstractormf --version
 ```
 
@@ -122,4 +124,4 @@ uv run mypy tikstractormf scripts
 
 ## Status
 
-19 tests pass; ruff and mypy clean. Known gaps: pagination not verified live, profile-pic ext derivation, URL freshness on large profiles. See `review.md`.
+37 tests pass; ruff and mypy clean. Known gaps: profile-pic ext derivation, URL freshness on large profiles. See `review.md`.

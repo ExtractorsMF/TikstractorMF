@@ -69,6 +69,8 @@ def _report_scrape(report: ScrapeReport) -> None:
     parts.append(f"failed: {report.failed}")
     if report.profile_pic:
         parts.append("profile pic: 1")
+    if getattr(report, "stories", 0):
+        parts.append(f"stories: {report.stories}")
     # `downloaded: 0` next to a non-zero `skipped` reads as a failed run when it
     # is the opposite: every file was already there. Say so.
     if not report.downloaded and report.skipped:
@@ -143,11 +145,17 @@ def main(
     dest: Path = typer.Option(Path("./dl"), "--dest", "-d", help="Output directory"),
     limit: int | None = typer.Option(None, "--limit", "-l", help="Posts limit (default all)"),
     profile_pic_only: bool = typer.Option(False, "--profile-pic-only", help="Profile pic only"),
-    only_stories: bool = typer.Option(False, "--only-stories", help="Stories only"),
+    stories_only: bool = typer.Option(False, "--stories-only", help="Stories only"),
     photos_only: bool = typer.Option(False, "--photos-only", help="Photos only"),
     videos_only: bool = typer.Option(False, "--videos-only", help="Videos only"),
     audio_only: bool = typer.Option(False, "--audio-only", help="Audio only"),
     with_audio: bool = typer.Option(False, "--with-audio", help="Extract audio from photo posts"),
+    include: list[str] | None = typer.Option(
+        None, "--include", "-i", help="Content types to fetch: posts, stories, profile. Repeatable."
+    ),
+    exclude: list[str] | None = typer.Option(
+        None, "--exclude", help="Content types to skip: posts, stories, profile."
+    ),
     # Chrome impersonation is always on (TikTok WAF blocks plain httpx).
     # Kept as a local default so the rest of the flow is unchanged.
     impersonate: str | None = "chrome",
@@ -275,13 +283,62 @@ def main(
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
 
+    # Normalize composable content selection.
+    VALID_TYPES = {"posts", "stories", "profile"}
+    # Accept both repeated (--include a --include b) and comma/space separated
+    # (--include a,b or --include "a b") forms, so the user does not have to
+    # repeat the flag for every content type.
+    def _split(values):
+        out = []
+        for v in (values or []):
+            for part in str(v).replace(",", " ").split():
+                part = part.strip().lower()
+                if part:
+                    out.append(part)
+        return out
+
+    raw_include = _split(include)
+    raw_exclude = _split(exclude)
+    for val in raw_include + raw_exclude:
+        if val not in VALID_TYPES:
+            err_console.print(
+                f"[red]unknown content type: {val!r} "
+                f"(valid: {', '.join(sorted(VALID_TYPES))})[/red]"
+            )
+            raise typer.Exit(1)
+    if include is not None and (stories_only or profile_pic_only):
+        err_console.print(
+            "[yellow]warning — --include takes precedence over "
+            "--stories-only/--profile-pic-only[/yellow]",
+            soft_wrap=True,
+        )
+    if include is not None:
+        selected = set(raw_include)
+    elif stories_only:
+        selected = {"stories"}
+    elif profile_pic_only:
+        selected = {"profile"}
+    else:
+        selected = {"posts", "stories", "profile"}
+    selected -= set(raw_exclude)
+    if not selected:
+        err_console.print("[red]content selection is empty after --exclude[/red]")
+        raise typer.Exit(1)
+
+    include_posts = "posts" in selected
+    include_stories = "stories" in selected
+    include_profile = "profile" in selected
+
     _execute_scrape(
         username=username,
         cookies_arg=cookies_arg,
         dest=dest,
         limit=limit,
         profile_pic_only=profile_pic_only,
-        only_stories=only_stories,
+        stories_only=stories_only,
+        include_posts=include_posts,
+        include_stories=include_stories,
+        include_profile=include_profile,
         photos_only=photos_only,
         videos_only=videos_only,
         audio_only=audio_only,
@@ -323,7 +380,7 @@ def _execute_scrape(
     dest: Path,
     limit: int | None,
     profile_pic_only: bool,
-    only_stories: bool,
+    stories_only: bool,
     photos_only: bool,
     videos_only: bool,
     audio_only: bool,
@@ -345,6 +402,9 @@ def _execute_scrape(
     no_adopt_existing: bool = False,
     get_urls: bool = False,
     verbose: bool = False,
+    include_posts: bool = True,
+    include_stories: bool = True,
+    include_profile: bool = True,
 ) -> None:
     from tikstractormf.client import Tiktokscraper
 
@@ -415,7 +475,6 @@ def _execute_scrape(
             )
             console.print(f"[green]profile pic -> {out}[/green]", soft_wrap=True)
             return
-        is_all = not photos_only and not videos_only and not profile_pic_only and not only_stories
         retry_ids = set()
         if retry_failed:
             for part in retry_failed.split(","):
@@ -481,7 +540,7 @@ def _execute_scrape(
 
         futures = []
         with ThreadPoolExecutor(max_workers=max(1, download_concurrency or 1)) as ex:
-            if not only_stories:
+            if include_posts:
                 for post in scraper.iter_posts(
                     username, limit=limit, concurrency=concurrency
                 ):
@@ -507,27 +566,28 @@ def _execute_scrape(
                             continue
                         futures.append(ex.submit(_download_one, post, media))
             # Stories: always include audio (not optional)
-            for story in scraper.iter_stories(
-                username, limit=limit, concurrency=concurrency
-            ):
-                if report is None:
-                    report = scraper.last_report
-                for media in story.media:
-                    if retry_ids and media.id not in retry_ids:
-                        continue
-                    if photos_only and media.type != "image":
-                        report.filtered += 1
-                        continue
-                    if videos_only and media.type != "video":
-                        report.filtered += 1
-                        continue
-                    if audio_only and media.type != "audio":
-                        report.filtered += 1
-                        continue
-                    if get_urls:
-                        console.print(media.url, soft_wrap=True)
-                        continue
-                    futures.append(ex.submit(_download_one, story, media))
+            if include_stories:
+                for story in scraper.iter_stories(
+                    username, limit=limit, concurrency=concurrency
+                ):
+                    if report is None:
+                        report = scraper.last_report
+                    for media in story.media:
+                        if retry_ids and media.id not in retry_ids:
+                            continue
+                        if photos_only and media.type != "image":
+                            report.filtered += 1
+                            continue
+                        if videos_only and media.type != "video":
+                            report.filtered += 1
+                            continue
+                        if audio_only and media.type != "audio":
+                            report.filtered += 1
+                            continue
+                        if get_urls:
+                            console.print(media.url, soft_wrap=True)
+                            continue
+                        futures.append(ex.submit(_download_one, story, media))
             for f in futures:
                 f.result()
 
@@ -536,25 +596,29 @@ def _execute_scrape(
         if report is None:
             report = ScrapeReport(limit=limit)
 
-        # For All (no filter), also download profile pic after posts as sibling
-        if is_all and not get_urls:
-            try:
-                profile_dest = final_dest
-                if profile_dest.name in {"photos", "videos", "profile", "posts"}:
-                    profile_dest = profile_dest.parent
-                outcome = scraper.download_profile_pic(
-                    username, profile_dest, filename_template=filename_template,
-                    overwrite=overwrite, skip_on_403=skip_on_403,
-                )
-                # Not counted through _count: the avatar is not one of the
-                # posts' media, so tallying it made downloaded+skipped exceed
-                # `media` and broke the identity the summary is read by.
-                # Reported on its own line instead.
-                report.profile_pic = outcome.path is not None
-                console.print(f"  {username}_profile -> {outcome.path}", soft_wrap=True)
-            except Exception as exc:
-                report.profile_pic = False
-                err_console.print(f"[yellow]  profile pic failed: {exc}[/yellow]")
+        # Download/print profile pic when included (sibling of posts).
+        if include_profile:
+            if get_urls:
+                try:
+                    profile = scraper.get_profile(username)
+                    if profile.profile_pic_url:
+                        console.print(profile.profile_pic_url, soft_wrap=True)
+                except Exception as exc:
+                    err_console.print(f"[yellow]  profile pic failed: {exc}[/yellow]")
+            else:
+                try:
+                    profile_dest = final_dest
+                    if profile_dest.name in {"photos", "videos", "profile", "posts"}:
+                        profile_dest = profile_dest.parent
+                    outcome = scraper.download_profile_pic(
+                        username, profile_dest, filename_template=filename_template,
+                        overwrite=overwrite, skip_on_403=skip_on_403,
+                    )
+                    report.profile_pic = outcome.path is not None
+                    console.print(f"  {username}_profile -> {outcome.path}", soft_wrap=True)
+                except Exception as exc:
+                    report.profile_pic = False
+                    err_console.print(f"[yellow]  profile pic failed: {exc}[/yellow]")
 
         if failed_ids:
             err_console.print(
