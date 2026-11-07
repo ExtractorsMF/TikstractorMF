@@ -105,7 +105,6 @@ def parse_item(item: dict, fallback_username: str | None = None,
                     best_score = score
                     play_addr = url_list[0]
                     best_url_list = list(url_list)
-                    format_hint = pa.get("DataSize") and format_hint
             if not play_addr and bitrate_info:
                 first = bitrate_info[0].get("PlayAddr", {}).get("UrlList") or []
                 if first:

@@ -49,6 +49,9 @@ class ScrapeReport:
     failed: int = 0
     filtered: int = 0
     profile_pic: bool = False
+    # stories are tracked separately so they never clobber the posts counters
+    stories: int = 0
+    story_media: int = 0
 
 
 def _finish_report(report: ScrapeReport, posts: list[Any]) -> None:
@@ -98,6 +101,7 @@ class TiktokAPI:
         )
         self._profile_cache: dict[str, str] = {}
         self._sec_uid_cache: dict[str, str] = {}
+        self._item_by_id: dict[str, dict[str, Any]] = {}
         self.last_report = ScrapeReport()
         # Reused across creator/item_list pages, like gallery-dl's pagination.
         import random as _random
@@ -131,7 +135,11 @@ class TiktokAPI:
             expected = base64.b64decode((c["v"]["c"] + "==").encode())
             base = hashlib.sha256(base64.b64decode((c["v"]["a"] + "==").encode()))
             idx = 0
+            import time as _t
+            _deadline = _t.monotonic() + 5.0
             for i in range(1_000_000):
+                if i % 50000 == 0 and _t.monotonic() > _deadline:
+                    return False
                 test = base.copy()
                 test.update(str(i).encode())
                 if test.digest() == expected:
@@ -577,6 +585,8 @@ class TiktokAPI:
             if limit is not None and len(candidate_ids) >= limit:
                 break
             if cursor in seen_cursors:
+                report.truncated = True
+                report.stop_reason = "repeated cursor"
                 break
             seen_cursors.add(cursor)
             pages += 1
@@ -597,11 +607,15 @@ class TiktokAPI:
                 )
             except Exception as exc:
                 report.api_error = str(exc)
+                report.truncated = True
+                report.stop_reason = "api error"
                 break
             try:
                 data = resp.json()
             except Exception as exc:
                 report.api_error = f"invalid json: {exc}"
+                report.truncated = True
+                report.stop_reason = "invalid json"
                 break
 
             items = data.get("itemList") or data.get("item_list") or []
@@ -672,8 +686,12 @@ class TiktokAPI:
             try:
                 new_cursor = int(items[-1].get("createTime", 0)) * 1000
             except (TypeError, ValueError):
+                report.truncated = True
+                report.stop_reason = "cursor parse failed"
                 break
             if not new_cursor or new_cursor == cursor:
+                report.truncated = True
+                report.stop_reason = "cursor did not advance"
                 break
             cursor = new_cursor
 
@@ -682,7 +700,10 @@ class TiktokAPI:
             posts = posts[:limit]
 
         report.used_fallback = False
-        report.truncated = False
+        if report.api_error:
+            report.truncated = True
+            if not report.stop_reason:
+                report.stop_reason = "api error"
         if not posts:
             _warn(f"no posts found for @{username}. The account may be empty or private.")
         _finish_report(report, posts)
@@ -860,9 +881,11 @@ class TiktokAPI:
             cursor = new_cursor
 
         report.used_fallback = False
+        # Track stories separately so they never clobber the posts counters.
+        report.stories = len(stories)
+        report.story_media = sum(len(getattr(p, "media", ())) for p in stories)
         if not stories:
             _warn(f"no stories found for @{username}.")
-        _finish_report(report, stories)
         return
 
     def get_stories(
