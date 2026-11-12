@@ -378,6 +378,143 @@ def _chromium_key_from_secret_service(apps: list[str]) -> bytes | None:
     return hashlib.pbkdf2_hmac("sha1", b"", b"saltysalt", 1, dklen=16)
 
 
+def _load_firefox_direct(domain: str = "tiktok.com") -> http.cookiejar.CookieJar | None:
+    """Read cookies directly from Firefox's SQLite DB.
+
+    Firefox does not encrypt its cookies, so we can read them with the
+    built-in sqlite3 module without browser_cookie3. This is more robust
+    than browser_cookie3, which sometimes fails to find the profile
+    directory (especially on Debian/Fedora with ESR or snap/flatpak).
+    """
+    import sqlite3
+
+    home = Path.home()
+    candidates = [
+        home / ".mozilla" / "firefox",
+        home / "snap" / "firefox" / "common" / ".mozilla" / "firefox",
+        home / ".var" / "app" / "org.mozilla.firefox" / ".mozilla" / "firefox",
+    ]
+
+    profile_dir = None
+    for base in candidates:
+        if not base.is_dir():
+            continue
+        # Look for profiles.ini to find the active profile.
+        ini = base / "profiles.ini"
+        if ini.is_file():
+            try:
+                import configparser
+
+                cfg = configparser.ConfigParser()
+                cfg.read(str(ini))
+                for section in cfg.sections():
+                    if section.startswith("Profile"):
+                        path_val = cfg.get(section, "Path", fallback=None)
+                        if path_val:
+                            p = base / path_val
+                            if (p / "cookies.sqlite").is_file():
+                                profile_dir = p
+                                break
+            except Exception:
+                pass
+        if profile_dir is not None:
+            break
+        # Fallback: pick the most recent *.default* directory with cookies.sqlite.
+        if profile_dir is None:
+            try:
+                profiles = sorted(
+                    (p for p in base.iterdir() if p.is_dir() and (p / "cookies.sqlite").is_file()),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+                for p in profiles:
+                    if "default" in p.name.lower():
+                        profile_dir = p
+                        break
+                if profile_dir is None and profiles:
+                    profile_dir = profiles[0]
+            except Exception:
+                pass
+        if profile_dir is not None:
+            break
+
+    if profile_dir is None:
+        return None
+
+    db_path = profile_dir / "cookies.sqlite"
+    if not db_path.is_file():
+        return None
+
+    # Firefox may lock the DB while running; copy to a temp file to be safe.
+    import shutil
+    import tempfile
+
+    try:
+        tmp = Path(tempfile.mktemp(suffix=".sqlite"))
+        shutil.copy2(db_path, tmp)
+        conn = sqlite3.connect(f"file:{tmp}?mode=ro", uri=True)
+    except Exception:
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            tmp = None
+        except Exception:
+            return None
+
+    rows = []
+    try:
+        cur = conn.execute(
+            "SELECT name, value, host, path, expiry, isSecure, isHttpOnly "
+            "FROM moz_cookies"
+        )
+        rows = cur.fetchall()
+    except Exception:
+        conn.close()
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
+        return None
+    conn.close()
+    if tmp is not None:
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
+
+    target = domain.lstrip(".")
+    jar = http.cookiejar.CookieJar()
+    for name, value, host, path, expiry, is_secure, is_httponly in rows:
+        hk = (host or "").lstrip(".")
+        if not (hk == target or hk.endswith("." + target) or target.endswith("." + hk)):
+            continue
+        initial_dot = (host or "").startswith(".")
+        expires = expiry if expiry and expiry > 0 else None
+        try:
+            ck = http.cookiejar.Cookie(
+                version=0,
+                name=name,
+                value=value,
+                port=None,
+                port_specified=False,
+                domain=host,
+                domain_specified=True,
+                domain_initial_dot=initial_dot,
+                path=path or "/",
+                path_specified=True,
+                secure=bool(is_secure),
+                expires=expires,
+                discard=expires is None,
+                comment=None,
+                comment_url=None,
+                rest={"HttpOnly": ""} if is_httponly else {},
+            )
+            jar.set_cookie(ck)
+        except Exception:
+            continue
+    return jar
+
+
 def _load_flatpak_chromium(browser: str, domain: str) -> http.cookiejar.CookieJar | None:
     """Read cookies directly from a Flatpak browser's SQLite DB.
 
@@ -510,6 +647,14 @@ def load_from_browser(browser: str, *, domain: str = "tiktok.com") -> http.cooki
         ) from e
 
     b = browser.lower()
+
+    # Firefox: read directly from cookies.sqlite (unencrypted) instead of
+    # browser_cookie3, which sometimes fails to find the profile directory.
+    if b in ("firefox", "firefox-esr", "firefox-nightly"):
+        firefox_jar = _load_firefox_direct(domain)
+        if firefox_jar is not None and len(firefox_jar) > 0:
+            return firefox_jar
+        # Fall through to browser_cookie3 if direct read found nothing.
 
     # Flatpak browsers: browser_cookie3 cannot read them because their runtime
     # Python is not visible to the host (libpython3.14.so.1.0 missing). Read
