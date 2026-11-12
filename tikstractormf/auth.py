@@ -245,6 +245,253 @@ def _brave_variant(profile_dir: str, browser_cookie3: Any) -> Any:
     return lambda domain: _load_brave_profile(profile_dir, domain, browser_cookie3)
 
 
+# Flatpak application ids for browsers that ship as sandboxes.
+_FLATPAK_IDS = {
+    "brave": "com.brave.Browser",
+    "brave-browser": "com.brave.Browser",
+    "brave-origin": "com.brave.Browser",
+    "brave-origin-beta": "com.brave.Browser",
+    "brave-origin-nightly": "com.brave.Browser",
+    "brave-beta": "com.brave.Browser",
+    "brave-nightly": "com.brave.Browser",
+    "chrome": "com.google.Chrome",
+    "chromium": "org.chromium.Chromium",
+    "edge": "com.microsoft.Edge",
+    "vivaldi": "com.vivaldi.Vivaldi",
+    "opera": "com.opera.Opera",
+}
+
+
+def _flatpak_profile_dir(browser: str) -> Path | None:
+    """Return the Flatpak profile root for `browser`, or None if not installed
+    as a Flatpak."""
+    app_id = _FLATPAK_IDS.get(browser.lower())
+    if app_id is None:
+        return None
+    home = Path.home()
+    base = home / ".var" / "app" / app_id / "config"
+    # Brave keeps per-channel directories.
+    rel_map = {
+        "brave": "BraveSoftware/Brave-Browser",
+        "brave-browser": "BraveSoftware/Brave-Browser",
+        "brave-origin": "BraveSoftware/Brave-Origin",
+        "brave-origin-beta": "BraveSoftware/Brave-Origin-Beta",
+        "brave-origin-nightly": "BraveSoftware/Brave-Origin-Nightly",
+        "brave-beta": "BraveSoftware/Brave-Browser-Beta",
+        "brave-nightly": "BraveSoftware/Brave-Browser-Nightly",
+        "chrome": "google-chrome",
+        "chromium": "chromium",
+        "edge": "microsoft-edge",
+        "vivaldi": "vivaldi",
+        "opera": "opera",
+    }
+    rel = rel_map.get(browser.lower())
+    if rel is None:
+        return None
+    root = base / rel
+    if not root.is_dir():
+        return None
+    return root
+
+
+def _is_flatpak_browser(browser: str) -> bool:
+    return _flatpak_profile_dir(browser) is not None
+
+
+def _decrypt_chromium_value(
+    encrypted: bytes, key: bytes, host: str
+) -> str | None:
+    """Decrypt a Chromium v10/v11 cookie value. Returns None on failure."""
+    if not encrypted or len(encrypted) < 4:
+        return None
+    prefix = encrypted[:3]
+    if prefix not in (b"v10", b"v11", b"v12"):
+        # Unencrypted (old) value.
+        try:
+            return encrypted.decode("utf-8", errors="replace")
+        except Exception:
+            return None
+    body = encrypted[3:]
+    if len(body) < 16:
+        return None
+    try:
+        from Cryptodome.Cipher import AES
+    except Exception:
+        try:
+            from Crypto.Cipher import AES  # type: ignore
+        except Exception:
+            return None
+    iv = b" " * 16
+    try:
+        cipher = AES.new(key, AES.MODE_CBC, iv)
+        padded = cipher.decrypt(body)
+    except Exception:
+        return None
+    # PKCS#7 unpad, validated.
+    if not padded:
+        return None
+    pad = padded[-1]
+    if pad < 1 or pad > 16 or padded[-pad:] != bytes([pad]) * pad:
+        return None
+    plain = padded[:-pad]
+    # Schema >=24 prefixes a SHA-256(host) domain hash; strip if it matches.
+    import hashlib
+
+    host_hash = hashlib.sha256(host.encode()).digest()[:32]
+    if len(plain) >= 32 and plain[:32] == host_hash[:32]:
+        plain = plain[32:]
+    try:
+        return plain.decode("utf-8")
+    except Exception:
+        return None
+
+
+def _chromium_key_from_secret_service(apps: list[str]) -> bytes | None:
+    """Try to recover the safe-storage key via secret-tool for one of `apps`."""
+    import subprocess
+
+    for app in apps:
+        for schema in ("chrome_libsecret_os_crypt_password_v2", None):
+            cmd = ["secret-tool", "lookup"]
+            if schema:
+                cmd += ["xdg:schema", schema, "application", app]
+            else:
+                cmd += ["application", app]
+            try:
+                out = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=5
+                )
+            except Exception:
+                continue
+            if out.returncode == 0 and out.stdout:
+                pw = out.stdout.rstrip("\n")
+                if pw:
+                    import hashlib
+
+                    key = hashlib.pbkdf2_hmac(
+                        "sha1", pw.encode(), b"saltysalt", 1, dklen=16
+                    )
+                    return key
+    # Empty key (KWallet race) fallback.
+    import hashlib
+
+    return hashlib.pbkdf2_hmac("sha1", b"", b"saltysalt", 1, dklen=16)
+
+
+def _load_flatpak_chromium(browser: str, domain: str) -> http.cookiejar.CookieJar | None:
+    """Read cookies directly from a Flatpak browser's SQLite DB.
+
+    browser_cookie3 cannot be used here because it tries to load the Flatpak's
+    runtime Python (libpython3.14.so.1.0), which is not visible to the host.
+    """
+    import sqlite3
+
+    root = _flatpak_profile_dir(browser)
+    if root is None:
+        return None
+
+    # Find the Cookies DB. Brave keeps per-profile subdirs.
+    db_path = None
+    for cand in (
+        root / "Default" / "Cookies",
+        root / "Cookies",
+    ):
+        if cand.is_file():
+            db_path = cand
+            break
+    if db_path is None:
+        # Search one level.
+        for p in root.rglob("Cookies"):
+            db_path = p
+            break
+    if db_path is None:
+        return None
+
+    # Secret Service app attributes to try.
+    app_candidates = {
+        "brave": ["brave", "brave-origin"],
+        "brave-browser": ["brave", "brave-origin"],
+        "brave-origin": ["brave", "brave-origin"],
+        "brave-origin-beta": ["brave", "brave-origin"],
+        "brave-origin-nightly": ["brave", "brave-origin"],
+        "brave-beta": ["brave", "brave-origin"],
+        "brave-nightly": ["brave", "brave-origin"],
+        "chrome": ["chrome", "chromium"],
+        "chromium": ["chromium", "chrome"],
+        "edge": ["microsoft-edge", "chrome"],
+        "vivaldi": ["vivaldi", "chrome"],
+        "opera": ["opera", "chrome"],
+    }.get(browser, ["chrome"])
+
+    key = _chromium_key_from_secret_service(app_candidates)
+    if key is None:
+        return None
+
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except Exception:
+        return None
+    rows = []
+    try:
+        cur = conn.execute(
+            "SELECT host_key, name, value, path, expires_utc, is_secure, "
+            "is_httponly, encrypted_value FROM cookies"
+        )
+        rows = cur.fetchall()
+    except Exception:
+        conn.close()
+        return None
+    conn.close()
+
+    # Filter to the requested domain.
+    def _host_matches(host_key: str) -> bool:
+        hk = host_key.lstrip(".")
+        target = domain.lstrip(".")
+        return hk == target or hk.endswith("." + target) or target.endswith("." + hk)
+
+    jar = http.cookiejar.CookieJar()
+    for host_key, name, value, path, expires_utc, is_secure, is_httponly, enc in rows:
+        if not _host_matches(host_key or ""):
+            continue
+        # Decrypt if needed.
+        if value:
+            cookie_value = value
+        else:
+            dec = _decrypt_chromium_value(enc or b"", key, host_key or "")
+            if dec is None:
+                continue
+            cookie_value = dec
+        # expires_utc is microseconds since 1601.
+        if expires_utc and expires_utc > 0:
+            expires = expires_utc / 1_000_000 - 11644473600
+        else:
+            expires = None
+        initial_dot = (host_key or "").startswith(".")
+        try:
+            ck = http.cookiejar.Cookie(
+                version=0,
+                name=name,
+                value=cookie_value,
+                port=None,
+                port_specified=False,
+                domain=host_key,
+                domain_specified=True,
+                domain_initial_dot=initial_dot,
+                path=path or "/",
+                path_specified=True,
+                secure=bool(is_secure),
+                expires=expires,
+                discard=expires is None,
+                comment=None,
+                comment_url=None,
+                rest={"HttpOnly": ""} if is_httponly else {},
+            )
+            jar.set_cookie(ck)
+        except Exception:
+            continue
+    return jar
+
+
 def load_from_browser(browser: str, *, domain: str = "tiktok.com") -> http.cookiejar.CookieJar:
     """Load cookies directly from the browser (brave/chrome/firefox)
     like gallery-dl --cookies-from-browser.
@@ -263,6 +510,19 @@ def load_from_browser(browser: str, *, domain: str = "tiktok.com") -> http.cooki
         ) from e
 
     b = browser.lower()
+
+    # Flatpak browsers: browser_cookie3 cannot read them because their runtime
+    # Python is not visible to the host (libpython3.14.so.1.0 missing). Read
+    # the cookie DB directly instead.
+    if _is_flatpak_browser(b):
+        flatpak_jar = _load_flatpak_chromium(b, domain)
+        if flatpak_jar is not None:
+            return flatpak_jar
+        raise ValueError(
+            f"could not read cookies from Flatpak browser '{browser}'. "
+            "Export cookies.txt manually (ElDevoraCucas) or use scrapmf's "
+            "cookie capture (Configuration -> Cookie profiles)."
+        )
 
     # Brave ships several independent profiles under the same config root, and
     # browser_cookie3 only has a shortcut for the default one:
